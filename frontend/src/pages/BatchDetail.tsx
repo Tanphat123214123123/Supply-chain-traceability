@@ -1,18 +1,66 @@
-import React, { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { useParams, useNavigate, Link } from 'react-router-dom'
-import { traceApi, TraceResult, STAGE_LABELS } from '../api/client'
+import { useAuth } from '../context/AuthContext'
+import { batchApi, traceApi, TraceResult, STAGE_LABELS } from '../api/client'
 import Timeline from '../components/Timeline'
 import VerifyBadge from '../components/VerifyBadge'
+
+function downloadBlob(filename: string, content: string, mime: string) {
+  const blob = new Blob([content], { type: mime })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  a.click()
+  URL.revokeObjectURL(url)
+}
+
+function eventsToCsv(result: TraceResult): string {
+  const header = ['sequenceNumber', 'stage', 'actorId', 'timestamp', 'location', 'notes', 'hash', 'prevHash']
+  const rows = result.events.map((e) =>
+    [e.sequenceNumber, e.stage, e.actorId, e.timestamp, e.location, e.notes ?? '', e.hash, e.prevHash]
+      .map((v) => `"${String(v).replace(/"/g, '""')}"`)
+      .join(','),
+  )
+  return [header.join(','), ...rows].join('\n')
+}
+
+function QrPanel({ batchId }: { batchId: string }) {
+  const [svg, setSvg] = useState('')
+
+  useEffect(() => {
+    batchApi.qrSvg(batchId).then(setSvg).catch(() => {})
+  }, [batchId])
+
+  if (!svg) return null
+
+  return (
+    <div className="bg-white rounded-xl border border-gray-200 p-4 flex flex-col items-center gap-2">
+      <p className="text-sm font-medium text-gray-700 self-start">Mã QR tra cứu</p>
+      {/* eslint-disable-next-line react/no-danger */}
+      <div className="w-40 h-40" dangerouslySetInnerHTML={{ __html: svg }} />
+      <button
+        type="button"
+        onClick={() => downloadBlob(`qr-${batchId.slice(0, 8)}.svg`, svg, 'image/svg+xml')}
+        className="text-xs text-blue-600 hover:underline"
+      >
+        Tải mã QR (SVG)
+      </button>
+    </div>
+  )
+}
 
 export default function BatchDetail() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
+  const { actor } = useAuth()
   const [result, setResult] = useState<TraceResult | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [direction, setDirection] = useState<'forward' | 'backward'>('forward')
+  const [recalling, setRecalling] = useState(false)
 
-  useEffect(() => {
+  const load = useCallback(() => {
     if (!id) return
     setLoading(true)
     setError('')
@@ -22,6 +70,25 @@ export default function BatchDetail() {
       .catch(() => setError('Không thể tải thông tin lô hàng'))
       .finally(() => setLoading(false))
   }, [id, direction])
+
+  useEffect(() => {
+    load()
+  }, [load])
+
+  const handleRecall = async () => {
+    if (!id) return
+    const reason = window.prompt('Nhập lý do thu hồi lô hàng:')
+    if (!reason || !reason.trim()) return
+    setRecalling(true)
+    try {
+      await batchApi.recall(id, reason.trim())
+      load()
+    } catch {
+      window.alert('Thu hồi lô hàng thất bại')
+    } finally {
+      setRecalling(false)
+    }
+  }
 
   if (loading) {
     return (
@@ -142,10 +209,48 @@ export default function BatchDetail() {
           >
             + Ghi sự kiện mới
           </Link>
+
+          <button
+            type="button"
+            onClick={() => downloadBlob(`hanh-trinh-${batch.id.slice(0, 8)}.csv`, eventsToCsv(result), 'text/csv')}
+            className="text-sm bg-white border border-gray-200 hover:border-blue-300
+                       text-gray-700 px-4 py-2 rounded-lg transition-colors"
+          >
+            Xuất CSV
+          </button>
+
+          <button
+            type="button"
+            onClick={() =>
+              downloadBlob(
+                `hanh-trinh-${batch.id.slice(0, 8)}.json`,
+                JSON.stringify(result, null, 2),
+                'application/json',
+              )
+            }
+            className="text-sm bg-white border border-gray-200 hover:border-blue-300
+                       text-gray-700 px-4 py-2 rounded-lg transition-colors"
+          >
+            Xuất JSON
+          </button>
+
+          {actor?.role === 'ADMIN' && !batch.isRecalled && (
+            <button
+              type="button"
+              disabled={recalling}
+              onClick={handleRecall}
+              className="text-sm bg-red-50 border border-red-200 hover:bg-red-100
+                         text-red-600 px-4 py-2 rounded-lg transition-colors disabled:opacity-60"
+            >
+              {recalling ? 'Đang thu hồi...' : 'Thu hồi lô hàng'}
+            </button>
+          )}
         </div>
 
         {/* Timeline */}
         <Timeline events={events} />
+
+        <QrPanel batchId={batch.id} />
 
         {/* Public QR link */}
         <div className="bg-white rounded-xl border border-gray-200 p-4">
@@ -155,6 +260,7 @@ export default function BatchDetail() {
               {publicUrl}
             </code>
             <button
+              type="button"
               onClick={() => navigator.clipboard.writeText(publicUrl)}
               className="text-xs text-blue-600 hover:underline flex-shrink-0"
             >

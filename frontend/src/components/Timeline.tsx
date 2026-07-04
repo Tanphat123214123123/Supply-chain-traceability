@@ -1,4 +1,3 @@
-import React from 'react'
 import { TraceEvent, STAGE_LABELS, STAGE_ICONS } from '../api/client'
 
 interface Props {

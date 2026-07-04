@@ -1,4 +1,4 @@
-import React, { useEffect, useState, FormEvent } from 'react'
+import { useEffect, useState, FormEvent } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
 import { batchApi, eventApi, Batch, SupplyChainStage, STAGE_LABELS, ROLE_STAGES } from '../api/client'
@@ -11,12 +11,20 @@ export default function RecordEvent() {
   const [searchParams] = useSearchParams()
 
   const [batches, setBatches] = useState<Batch[]>([])
+  const [mode, setMode] = useState<'existing' | 'new'>(searchParams.get('batchId') ? 'existing' : 'new')
   const [batchId, setBatchId] = useState(searchParams.get('batchId') ?? '')
   const [stage, setStage] = useState<SupplyChainStage | ''>('')
   const [location, setLocation] = useState('')
   const [notes, setNotes] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+
+  // New-batch fields (only used when mode === 'new')
+  const [productName, setProductName] = useState('')
+  const [productType, setProductType] = useState('')
+  const [origin, setOrigin] = useState('')
+  const [quantity, setQuantity] = useState('')
+  const [unit, setUnit] = useState('kg')
 
   const allowedStages = actor ? ROLE_STAGES[actor.role] : []
 
@@ -32,15 +40,39 @@ export default function RecordEvent() {
     setError('')
     setLoading(true)
     try {
+      let targetBatchId = batchId
+
+      if (mode === 'new') {
+        // Batch creation and event recording are two separate calls — if the
+        // second one fails, fall through to 'existing' mode with the batch
+        // that was already created, so it isn't stranded with zero events.
+        const newBatch = await batchApi.create({
+          productName,
+          productType,
+          origin,
+          quantity: Number(quantity),
+          unit,
+        })
+        targetBatchId = newBatch.id
+        setBatches((prev) => [newBatch, ...prev])
+        setBatchId(newBatch.id)
+        setMode('existing')
+      }
+
       const event = await eventApi.record({
-        batchId,
+        batchId: targetBatchId,
         stage,
         location,
         notes: notes.trim() || undefined,
       })
       navigate(`/batch/${event.batchId}`)
     } catch (err) {
-      setError((err as ApiErr)?.response?.data?.error ?? 'Ghi sự kiện thất bại')
+      setError(
+        (err as ApiErr)?.response?.data?.error ??
+          (mode === 'new'
+            ? 'Đã tạo lô hàng nhưng ghi sự kiện thất bại — thử ghi lại cho lô hàng vừa tạo.'
+            : 'Ghi sự kiện thất bại'),
+      )
     } finally {
       setLoading(false)
     }
@@ -68,25 +100,101 @@ export default function RecordEvent() {
         )}
 
         <form onSubmit={handleSubmit} className="bg-white rounded-xl border border-gray-200 p-6 space-y-5">
-          {/* Batch */}
+          {/* Batch mode toggle */}
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">
               Lô hàng <span className="text-red-500">*</span>
             </label>
-            <select
-              value={batchId}
-              onChange={(e) => setBatchId(e.target.value)}
-              required
-              className="w-full border border-gray-300 rounded-lg px-3 py-2.5 text-sm
-                         focus:outline-none focus:ring-2 focus:ring-blue-500"
-            >
-              <option value="">— Chọn lô hàng —</option>
-              {batches.map((b) => (
-                <option key={b.id} value={b.id}>
-                  {b.productName} · {b.origin} ({b.id.slice(0, 8)}…)
-                </option>
-              ))}
-            </select>
+            <div className="flex rounded-lg overflow-hidden border border-gray-200 mb-3">
+              <button
+                type="button"
+                onClick={() => setMode('existing')}
+                className={`flex-1 text-sm px-3 py-2 transition-colors ${
+                  mode === 'existing' ? 'bg-blue-600 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'
+                }`}
+              >
+                Lô hàng có sẵn
+              </button>
+              <button
+                type="button"
+                onClick={() => setMode('new')}
+                className={`flex-1 text-sm px-3 py-2 transition-colors ${
+                  mode === 'new' ? 'bg-blue-600 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'
+                }`}
+              >
+                Tạo lô hàng mới
+              </button>
+            </div>
+
+            {mode === 'existing' ? (
+              <select
+                value={batchId}
+                onChange={(e) => setBatchId(e.target.value)}
+                required
+                aria-label="Chọn lô hàng"
+                className="w-full border border-gray-300 rounded-lg px-3 py-2.5 text-sm
+                           focus:outline-none focus:ring-2 focus:ring-blue-500"
+              >
+                <option value="">— Chọn lô hàng —</option>
+                {batches.map((b) => (
+                  <option key={b.id} value={b.id}>
+                    {b.productName} · {b.origin} ({b.id.slice(0, 8)}…)
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <div className="space-y-3 bg-gray-50 border border-gray-100 rounded-lg p-3">
+                <div className="grid grid-cols-2 gap-3">
+                  <input
+                    type="text"
+                    value={productName}
+                    onChange={(e) => setProductName(e.target.value)}
+                    required
+                    placeholder="Tên sản phẩm"
+                    className="col-span-2 border border-gray-300 rounded-lg px-3 py-2 text-sm
+                               focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                  <input
+                    type="text"
+                    value={productType}
+                    onChange={(e) => setProductType(e.target.value)}
+                    required
+                    placeholder="Loại (VD: Nông sản)"
+                    className="border border-gray-300 rounded-lg px-3 py-2 text-sm
+                               focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                  <input
+                    type="text"
+                    value={origin}
+                    onChange={(e) => setOrigin(e.target.value)}
+                    required
+                    placeholder="Xuất xứ"
+                    className="border border-gray-300 rounded-lg px-3 py-2 text-sm
+                               focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                  <input
+                    type="number"
+                    min="0"
+                    step="any"
+                    value={quantity}
+                    onChange={(e) => setQuantity(e.target.value)}
+                    required
+                    placeholder="Số lượng"
+                    className="border border-gray-300 rounded-lg px-3 py-2 text-sm
+                               focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                  <input
+                    type="text"
+                    value={unit}
+                    onChange={(e) => setUnit(e.target.value)}
+                    required
+                    placeholder="Đơn vị (VD: kg)"
+                    className="border border-gray-300 rounded-lg px-3 py-2 text-sm
+                               focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Stage */}
@@ -98,6 +206,7 @@ export default function RecordEvent() {
               value={stage}
               onChange={(e) => setStage(e.target.value as SupplyChainStage)}
               required
+              aria-label="Chọn khâu sản xuất"
               className="w-full border border-gray-300 rounded-lg px-3 py-2.5 text-sm
                          focus:outline-none focus:ring-2 focus:ring-blue-500"
             >

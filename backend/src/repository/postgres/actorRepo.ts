@@ -1,21 +1,50 @@
-import { Actor } from '../../domain/types';
+import { Pool } from 'pg';
+import { Actor, ActorRole } from '../../domain/types';
 import { IActorRepo } from '../interfaces';
 
-// TODO: implement using `pg` Pool — see migrations/001_init.sql for schema.
+interface ActorRow {
+  id: string;
+  name: string;
+  email: string;
+  password_hash: string;
+  role: ActorRole;
+  organization: string;
+  created_at: Date;
+  is_active: boolean;
+}
+
+function toActor(row: ActorRow): Actor {
+  return {
+    id: row.id,
+    name: row.name,
+    email: row.email,
+    passwordHash: row.password_hash,
+    role: row.role,
+    organization: row.organization,
+    createdAt: row.created_at,
+    isActive: row.is_active,
+  };
+}
+
 export class PostgresActorRepo implements IActorRepo {
-  async create(_actor: Actor): Promise<Actor> {
-    throw new Error('PostgresActorRepo not implemented yet');
+  constructor(private readonly pool: Pool) {}
+
+  async create(actor: Actor): Promise<Actor> {
+    await this.pool.query(
+      `INSERT INTO actors (id, name, email, password_hash, role, organization, created_at, is_active)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+      [actor.id, actor.name, actor.email, actor.passwordHash, actor.role, actor.organization, actor.createdAt, actor.isActive],
+    );
+    return actor;
   }
-  async findById(_id: string): Promise<Actor | null> {
-    throw new Error('PostgresActorRepo not implemented yet');
+
+  async findById(id: string): Promise<Actor | null> {
+    const result = await this.pool.query<ActorRow>('SELECT * FROM actors WHERE id = $1', [id]);
+    return result.rows[0] ? toActor(result.rows[0]) : null;
   }
-  async findByEmail(_email: string): Promise<Actor | null> {
-    throw new Error('PostgresActorRepo not implemented yet');
-  }
-  async findAll(): Promise<Actor[]> {
-    throw new Error('PostgresActorRepo not implemented yet');
-  }
-  async update(_id: string, _updates: Partial<Actor>): Promise<Actor | null> {
-    throw new Error('PostgresActorRepo not implemented yet');
+
+  async findByEmail(email: string): Promise<Actor | null> {
+    const result = await this.pool.query<ActorRow>('SELECT * FROM actors WHERE lower(email) = lower($1)', [email]);
+    return result.rows[0] ? toActor(result.rows[0]) : null;
   }
 }

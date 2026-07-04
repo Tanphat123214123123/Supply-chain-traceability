@@ -1,21 +1,20 @@
-import dotenv from 'dotenv';
-dotenv.config();
-
+import 'dotenv/config';
+import { createApp } from './app';
 import { bootstrap } from './bootstrap';
-import { createApp } from './api/server';
 
-const PORT = parseInt(process.env.PORT ?? '3000', 10);
-const JWT_SECRET = process.env.JWT_SECRET ?? 'dev-secret-change-in-production';
+async function main(): Promise<void> {
+  const ctx = await bootstrap();
+  const port = Number(process.env.PORT ?? 3000);
+  const publicOrigin = process.env.PUBLIC_ORIGIN ?? `http://localhost:${port}`;
 
-bootstrap(JWT_SECRET)
-  .then(({ authService, supplyChainService }) => {
-    const app = createApp(authService, supplyChainService);
-    app.listen(PORT, () => {
-      console.log(`\nTraceChain API  →  http://localhost:${PORT}`);
-      console.log(`Health check    →  http://localhost:${PORT}/health`);
-    });
-  })
-  .catch((err) => {
-    console.error('Failed to start:', err);
-    process.exit(1);
+  const app = createApp(ctx, publicOrigin);
+
+  app.listen(port, () => {
+    console.log(`TraceChain backend listening on :${port} (store: ${ctx.usingPostgres ? 'PostgreSQL' : 'in-memory'})`);
   });
+}
+
+main().catch((err) => {
+  console.error('Failed to start server:', err);
+  process.exit(1);
+});

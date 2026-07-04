@@ -1,45 +1,37 @@
-export enum SupplyChainStage {
-  HARVEST = 'HARVEST',
-  PROCESSING = 'PROCESSING',
-  QUALITY_CHECK = 'QUALITY_CHECK',
-  PACKAGING = 'PACKAGING',
-  DISTRIBUTION = 'DISTRIBUTION',
-  RETAIL = 'RETAIL',
-}
+export type ActorRole = 'FARMER' | 'PROCESSOR' | 'INSPECTOR' | 'DISTRIBUTOR' | 'RETAILER' | 'ADMIN';
 
-export enum ActorRole {
-  FARMER = 'FARMER',
-  PROCESSOR = 'PROCESSOR',
-  INSPECTOR = 'INSPECTOR',
-  DISTRIBUTOR = 'DISTRIBUTOR',
-  RETAILER = 'RETAILER',
-  ADMIN = 'ADMIN',
-}
+export type SupplyChainStage =
+  | 'HARVEST'
+  | 'PROCESSING'
+  | 'QUALITY_CHECK'
+  | 'PACKAGING'
+  | 'DISTRIBUTION'
+  | 'RETAIL';
 
 export const STAGE_ORDER: SupplyChainStage[] = [
-  SupplyChainStage.HARVEST,
-  SupplyChainStage.PROCESSING,
-  SupplyChainStage.QUALITY_CHECK,
-  SupplyChainStage.PACKAGING,
-  SupplyChainStage.DISTRIBUTION,
-  SupplyChainStage.RETAIL,
+  'HARVEST',
+  'PROCESSING',
+  'QUALITY_CHECK',
+  'PACKAGING',
+  'DISTRIBUTION',
+  'RETAIL',
 ];
 
-export const ROLE_STAGE_PERMISSIONS: Record<ActorRole, SupplyChainStage[]> = {
-  [ActorRole.FARMER]: [SupplyChainStage.HARVEST],
-  [ActorRole.PROCESSOR]: [SupplyChainStage.PROCESSING, SupplyChainStage.PACKAGING],
-  [ActorRole.INSPECTOR]: [SupplyChainStage.QUALITY_CHECK],
-  [ActorRole.DISTRIBUTOR]: [SupplyChainStage.DISTRIBUTION],
-  [ActorRole.RETAILER]: [SupplyChainStage.RETAIL],
-  [ActorRole.ADMIN]: Object.values(SupplyChainStage),
+export const ROLE_STAGES: Record<ActorRole, SupplyChainStage[]> = {
+  FARMER: ['HARVEST'],
+  PROCESSOR: ['PROCESSING', 'PACKAGING'],
+  INSPECTOR: ['QUALITY_CHECK'],
+  DISTRIBUTOR: ['DISTRIBUTION'],
+  RETAILER: ['RETAIL'],
+  ADMIN: ['HARVEST', 'PROCESSING', 'QUALITY_CHECK', 'PACKAGING', 'DISTRIBUTION', 'RETAIL'],
 };
 
 export interface Actor {
   id: string;
   name: string;
-  role: ActorRole;
   email: string;
   passwordHash: string;
+  role: ActorRole;
   organization: string;
   createdAt: Date;
   isActive: boolean;
@@ -74,14 +66,9 @@ export interface TraceEvent {
   sequenceNumber: number;
 }
 
-export type AnomalyType =
-  | 'STAGE_OUT_OF_ORDER'
-  | 'DUPLICATE_STAGE'
-  | 'UNAUTHORIZED_STAGE'
-  | 'BATCH_RECALLED'
-  | 'HASH_TAMPERED';
-
 export type AnomalySeverity = 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
+
+export type AnomalyType = 'STAGE_SKIPPED' | 'DUPLICATE_STAGE' | 'OUT_OF_ORDER' | 'CHAIN_TAMPERED';
 
 export interface Anomaly {
   type: AnomalyType;
@@ -90,6 +77,33 @@ export interface Anomaly {
   batchId: string;
   eventId?: string;
   detectedAt: Date;
+}
+
+export interface TraceResult {
+  batch: Batch;
+  events: TraceEvent[];
+  anomalies: Anomaly[];
+  isValid: boolean;
+}
+
+export interface PublicTrace {
+  batch: Pick<Batch, 'id' | 'productName' | 'productType' | 'origin' | 'currentStage' | 'isRecalled' | 'recallReason'>;
+  stageCount: number;
+  isValid: boolean;
+  hasAnomalies: boolean;
+}
+
+export interface LoginDTO {
+  email: string;
+  password: string;
+}
+
+export interface RegisterDTO {
+  name: string;
+  email: string;
+  password: string;
+  role: ActorRole;
+  organization: string;
 }
 
 export interface CreateBatchDTO {
@@ -109,14 +123,15 @@ export interface RecordEventDTO {
   data?: Record<string, unknown>;
 }
 
-export interface LoginDTO {
-  email: string;
-  password: string;
+export interface StatsOverview {
+  totalBatches: number;
+  activeBatches: number;
+  recalledBatches: number;
+  totalEvents: number;
+  anomalyCount: number;
 }
 
-export interface TraceResult {
-  batch: Batch;
-  events: TraceEvent[];
-  anomalies: Anomaly[];
-  isValid: boolean;
+export interface StatsByStage {
+  stage: SupplyChainStage;
+  count: number;
 }

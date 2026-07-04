@@ -1,43 +1,58 @@
 import { createHash } from 'crypto';
 import { TraceEvent } from '../domain/types';
 
-export const GENESIS_HASH = '0000000000000000000000000000000000000000000000000000000000000000';
+export const GENESIS_HASH = '0'.repeat(64);
 
-export function computeEventHash(event: Omit<TraceEvent, 'hash'>): string {
-  const payload = JSON.stringify({
-    id: event.id,
+type UnhashedEvent = Pick<
+  TraceEvent,
+  'batchId' | 'stage' | 'actorId' | 'timestamp' | 'location' | 'notes' | 'data' | 'prevHash' | 'sequenceNumber'
+>;
+
+/** Deterministic JSON so identical event content always yields the same hash. */
+function canonicalPayload(event: UnhashedEvent): string {
+  return JSON.stringify({
     batchId: event.batchId,
     stage: event.stage,
     actorId: event.actorId,
     timestamp: event.timestamp.toISOString(),
     location: event.location,
     notes: event.notes ?? null,
-    data: event.data,
+    data: event.data ?? {},
     prevHash: event.prevHash,
     sequenceNumber: event.sequenceNumber,
   });
-  return createHash('sha256').update(payload).digest('hex');
 }
 
-export function verifyChain(events: TraceEvent[]): { valid: boolean; tamperedAt?: number } {
-  if (events.length === 0) return { valid: true };
+export function computeEventHash(event: UnhashedEvent): string {
+  return createHash('sha256').update(canonicalPayload(event)).digest('hex');
+}
 
-  const sorted = [...events].sort((a, b) => a.sequenceNumber - b.sequenceNumber);
+/**
+ * Verifies that a batch's event chain is intact: hashes recompute correctly
+ * and each event's prevHash links to the previous event's hash.
+ * Events must be passed sorted by sequenceNumber ascending.
+ */
+export function verifyChain(events: TraceEvent[]): boolean {
+  let expectedPrevHash = GENESIS_HASH;
 
-  for (let i = 0; i < sorted.length; i++) {
-    const event = sorted[i];
-    const expectedPrevHash = i === 0 ? GENESIS_HASH : sorted[i - 1].hash;
+  for (const event of events) {
+    if (event.prevHash !== expectedPrevHash) return false;
 
-    if (event.prevHash !== expectedPrevHash) {
-      return { valid: false, tamperedAt: i };
-    }
+    const recomputed = computeEventHash({
+      batchId: event.batchId,
+      stage: event.stage,
+      actorId: event.actorId,
+      timestamp: event.timestamp,
+      location: event.location,
+      notes: event.notes,
+      data: event.data,
+      prevHash: event.prevHash,
+      sequenceNumber: event.sequenceNumber,
+    });
+    if (recomputed !== event.hash) return false;
 
-    const { hash, ...rest } = event;
-    const recomputed = computeEventHash(rest);
-    if (recomputed !== hash) {
-      return { valid: false, tamperedAt: i };
-    }
+    expectedPrevHash = event.hash;
   }
 
-  return { valid: true };
+  return true;
 }

@@ -1,4 +1,4 @@
-import React, { FormEvent, useState } from 'react'
+import { FormEvent, useState } from 'react'
 import { SupplyChainStage, STAGE_LABELS, ROLE_STAGES, ActorRole } from '../api/client'
 
 interface Props {
@@ -48,6 +48,7 @@ export default function EventForm({ role, onSubmit, disabled }: Props) {
           onChange={(e) => setStage(e.target.value as SupplyChainStage)}
           required
           disabled={disabled || loading}
+          aria-label="Chọn khâu sản xuất"
           className="w-full border border-gray-300 rounded-lg px-3 py-2.5 text-sm
                      focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-60"
         >

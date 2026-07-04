@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useParams } from 'react-router-dom'
 import { traceApi, PublicTrace, STAGE_LABELS, STAGE_ORDER, STAGE_ICONS } from '../api/client'
 

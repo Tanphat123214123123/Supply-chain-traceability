@@ -2,6 +2,7 @@ import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { v4 as uuidv4 } from 'uuid';
 import { Actor, ActorRole, LoginDTO } from '../domain/types';
+import { ConflictError, UnauthorizedError } from '../errors';
 import { IActorRepo } from '../repository/interfaces';
 
 export interface JwtPayload {
@@ -25,7 +26,7 @@ export class AuthService {
     organization: string,
   ): Promise<Actor> {
     const existing = await this.actorRepo.findByEmail(email);
-    if (existing) throw new Error('Email already registered');
+    if (existing) throw new ConflictError('Email already registered');
 
     const passwordHash = await bcrypt.hash(password, 12);
     const actor: Actor = {
@@ -44,10 +45,10 @@ export class AuthService {
 
   async login(dto: LoginDTO): Promise<{ token: string; actor: Omit<Actor, 'passwordHash'> }> {
     const actor = await this.actorRepo.findByEmail(dto.email);
-    if (!actor || !actor.isActive) throw new Error('Invalid credentials');
+    if (!actor || !actor.isActive) throw new UnauthorizedError('Invalid credentials');
 
     const valid = await bcrypt.compare(dto.password, actor.passwordHash);
-    if (!valid) throw new Error('Invalid credentials');
+    if (!valid) throw new UnauthorizedError('Invalid credentials');
 
     const payload: JwtPayload = { actorId: actor.id, role: actor.role, email: actor.email };
     const token = jwt.sign(payload, this.jwtSecret, { expiresIn: this.jwtExpiresInSeconds });

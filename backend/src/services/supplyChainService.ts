@@ -1,29 +1,35 @@
 import { v4 as uuidv4 } from 'uuid';
-import {
-  Batch,
-  CreateBatchDTO,
-  RecordEventDTO,
-  ROLE_STAGE_PERMISSIONS,
-  STAGE_ORDER,
-  TraceEvent,
-  TraceResult,
-} from '../domain/types';
-import { IActorRepo, IBatchRepo, IEventRepo } from '../repository/interfaces';
-import { computeEventHash, GENESIS_HASH, verifyChain } from '../ledger/hashChain';
-import { AnomalyDetector } from './anomalyDetector';
+import { Actor, Batch, CreateBatchDTO, RecordEventDTO, ROLE_STAGES, STAGE_ORDER, TraceEvent } from '../domain/types';
+import { ConflictError, ForbiddenError, NotFoundError } from '../errors';
+import { computeEventHash, GENESIS_HASH } from '../ledger/hashChain';
+import { IBatchRepo, IEventRepo } from '../repository/interfaces';
+
+export { ConflictError, ForbiddenError, NotFoundError };
 
 export class SupplyChainService {
+  // Serializes recordEvent calls per batchId so two concurrent requests for the
+  // same batch can't both read the same sequenceNumber/prevHash and fork the chain.
+  private readonly batchQueues = new Map<string, Promise<unknown>>();
+
   constructor(
     private readonly batchRepo: IBatchRepo,
-    private readonly actorRepo: IActorRepo,
     private readonly eventRepo: IEventRepo,
-    private readonly anomalyDetector: AnomalyDetector,
   ) {}
 
-  async createBatch(dto: CreateBatchDTO, actorId: string): Promise<Batch> {
-    const actor = await this.actorRepo.findById(actorId);
-    if (!actor || !actor.isActive) throw new Error('Actor not found or inactive');
+  private runExclusive<T>(batchId: string, fn: () => Promise<T>): Promise<T> {
+    const tail = this.batchQueues.get(batchId) ?? Promise.resolve();
+    const result = tail.then(fn, fn);
+    this.batchQueues.set(
+      batchId,
+      result.then(
+        () => undefined,
+        () => undefined,
+      ),
+    );
+    return result;
+  }
 
+  async createBatch(actor: Actor, dto: CreateBatchDTO): Promise<Batch> {
     const batch: Batch = {
       id: uuidv4(),
       productName: dto.productName,
@@ -32,103 +38,78 @@ export class SupplyChainService {
       quantity: dto.quantity,
       unit: dto.unit,
       createdAt: new Date(),
-      createdBy: actorId,
+      createdBy: actor.id,
       currentStage: null,
       isRecalled: false,
       metadata: dto.metadata ?? {},
     };
-
     return this.batchRepo.create(batch);
   }
 
-  async recordEvent(dto: RecordEventDTO, actorId: string): Promise<TraceEvent> {
-    const [actor, batch] = await Promise.all([
-      this.actorRepo.findById(actorId),
-      this.batchRepo.findById(dto.batchId),
-    ]);
-
-    if (!actor || !actor.isActive) throw new Error('Actor not found or inactive');
-    if (!batch) throw new Error(`Batch ${dto.batchId} not found`);
-    if (batch.isRecalled) throw new Error('Cannot record events on a recalled batch');
-
-    const allowedStages = ROLE_STAGE_PERMISSIONS[actor.role];
-    if (!allowedStages.includes(dto.stage)) {
-      throw new Error(`Actor role ${actor.role} is not authorized to record stage ${dto.stage}`);
-    }
-
-    const existingEvents = await this.eventRepo.findByBatchId(dto.batchId);
-
-    const anomalies = this.anomalyDetector.checkBeforeRecord(batch, dto.stage, actor, existingEvents);
-    const blocking = anomalies.filter((a) => a.severity === 'CRITICAL' || a.severity === 'HIGH');
-    if (blocking.length > 0) {
-      throw new Error(`Anomaly blocked: ${blocking[0].message}`);
-    }
-
-    const lastEvent = existingEvents.length > 0 ? existingEvents[existingEvents.length - 1] : null;
-    const prevHash = lastEvent?.hash ?? GENESIS_HASH;
-    const sequenceNumber = (lastEvent?.sequenceNumber ?? -1) + 1;
-
-    const partial: Omit<TraceEvent, 'hash'> = {
-      id: uuidv4(),
-      batchId: dto.batchId,
-      stage: dto.stage,
-      actorId,
-      timestamp: new Date(),
-      location: dto.location,
-      notes: dto.notes,
-      data: dto.data ?? {},
-      prevHash,
-      sequenceNumber,
-    };
-
-    const event: TraceEvent = { ...partial, hash: computeEventHash(partial) };
-
-    const stageIndex = STAGE_ORDER.indexOf(dto.stage);
-    const currentIndex = batch.currentStage ? STAGE_ORDER.indexOf(batch.currentStage) : -1;
-
-    await Promise.all([
-      this.eventRepo.create(event),
-      stageIndex > currentIndex
-        ? this.batchRepo.update(dto.batchId, { currentStage: dto.stage })
-        : Promise.resolve(null),
-    ]);
-
-    return event;
-  }
-
-  async traceForward(batchId: string): Promise<TraceResult> {
-    const batch = await this.batchRepo.findById(batchId);
-    if (!batch) throw new Error(`Batch ${batchId} not found`);
-
-    const events = await this.eventRepo.findByBatchId(batchId);
-    const { valid } = verifyChain(events);
-    const anomalies = this.anomalyDetector.analyzeChain(batch, events);
-
-    return { batch, events, anomalies, isValid: valid };
-  }
-
-  async traceBackward(batchId: string): Promise<TraceResult> {
-    const result = await this.traceForward(batchId);
-    return { ...result, events: [...result.events].reverse() };
-  }
-
-  async recallBatch(batchId: string, reason: string, actorId: string): Promise<Batch> {
-    const [actor, batch] = await Promise.all([
-      this.actorRepo.findById(actorId),
-      this.batchRepo.findById(batchId),
-    ]);
-
-    if (!actor || !actor.isActive) throw new Error('Actor not found or inactive');
-    if (!batch) throw new Error(`Batch ${batchId} not found`);
-
-    return (await this.batchRepo.update(batchId, { isRecalled: true, recallReason: reason }))!;
-  }
-
-  async getBatch(batchId: string): Promise<Batch | null> {
-    return this.batchRepo.findById(batchId);
-  }
-
-  async getAllBatches(): Promise<Batch[]> {
+  async listBatches(): Promise<Batch[]> {
     return this.batchRepo.findAll();
+  }
+
+  async getBatch(id: string): Promise<Batch> {
+    const batch = await this.batchRepo.findById(id);
+    if (!batch) throw new NotFoundError('Batch not found');
+    return batch;
+  }
+
+  async recordEvent(actor: Actor, dto: RecordEventDTO): Promise<TraceEvent> {
+    return this.runExclusive(dto.batchId, async () => {
+      const batch = await this.batchRepo.findById(dto.batchId);
+      if (!batch) throw new NotFoundError('Batch not found');
+      if (batch.isRecalled) throw new ConflictError('Batch has been recalled — no further events allowed');
+
+      const allowedStages = ROLE_STAGES[actor.role];
+      if (!allowedStages.includes(dto.stage)) {
+        throw new ForbiddenError(`Role ${actor.role} is not permitted to record stage ${dto.stage}`);
+      }
+
+      const last = await this.eventRepo.lastEvent(dto.batchId);
+      const sequenceNumber = last ? last.sequenceNumber + 1 : 0;
+      const prevHash = last ? last.hash : GENESIS_HASH;
+
+      const unhashed = {
+        batchId: dto.batchId,
+        stage: dto.stage,
+        actorId: actor.id,
+        timestamp: new Date(),
+        location: dto.location,
+        notes: dto.notes,
+        data: dto.data ?? {},
+        prevHash,
+        sequenceNumber,
+      };
+
+      const event: TraceEvent = {
+        ...unhashed,
+        id: uuidv4(),
+        hash: computeEventHash(unhashed),
+      };
+
+      await this.eventRepo.create(event);
+
+      // currentStage tracks the furthest stage reached — a duplicate or
+      // out-of-order event (flagged separately by the anomaly detector)
+      // must not make the batch appear to regress.
+      const newIndex = STAGE_ORDER.indexOf(dto.stage);
+      const currentIndex = batch.currentStage ? STAGE_ORDER.indexOf(batch.currentStage) : -1;
+      if (newIndex > currentIndex) {
+        batch.currentStage = dto.stage;
+        await this.batchRepo.update(batch);
+      }
+
+      return event;
+    });
+  }
+
+  async recallBatch(id: string, reason: string): Promise<Batch> {
+    const batch = await this.batchRepo.findById(id);
+    if (!batch) throw new NotFoundError('Batch not found');
+    batch.isRecalled = true;
+    batch.recallReason = reason;
+    return this.batchRepo.update(batch);
   }
 }

@@ -1,7 +1,33 @@
-import React, { useEffect, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
+import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
 import { useAuth } from '../context/AuthContext'
-import { batchApi, Batch, ROLE_LABELS, STAGE_LABELS } from '../api/client'
+import { batchApi, statsApi, Batch, StatsByStage, ROLE_LABELS, STAGE_LABELS } from '../api/client'
+
+function StageChart() {
+  const [data, setData] = useState<StatsByStage[]>([])
+
+  useEffect(() => {
+    statsApi.byStage().then(setData).catch(() => {})
+  }, [])
+
+  if (data.every((d) => d.count === 0)) return null
+
+  return (
+    <div className="bg-white rounded-xl border border-gray-200 p-4 mb-5">
+      <h3 className="text-sm font-semibold text-gray-700 mb-3">Phân bổ sự kiện theo khâu</h3>
+      <ResponsiveContainer width="100%" height={220}>
+        <BarChart data={data.map((d) => ({ ...d, label: STAGE_LABELS[d.stage] }))}>
+          <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f0f0f0" />
+          <XAxis dataKey="label" tick={{ fontSize: 11 }} interval={0} angle={-20} textAnchor="end" height={50} />
+          <YAxis allowDecimals={false} tick={{ fontSize: 11 }} />
+          <Tooltip />
+          <Bar dataKey="count" fill="#2563eb" radius={[4, 4, 0, 0]} />
+        </BarChart>
+      </ResponsiveContainer>
+    </div>
+  )
+}
 
 function StagePill({ stage }: { stage: Batch['currentStage'] }) {
   if (!stage) {
@@ -90,6 +116,8 @@ export default function Dashboard() {
             <p className="text-xs text-gray-500 mt-0.5">Đã thu hồi</p>
           </div>
         </div>
+
+        {actor?.role === 'ADMIN' && <StageChart />}
 
         {/* Batch list */}
         {loading && <p className="text-center text-gray-400 py-16 text-sm">Đang tải...</p>}

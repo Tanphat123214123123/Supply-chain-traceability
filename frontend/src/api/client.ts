@@ -1,6 +1,6 @@
 import axios from 'axios'
 
-const BASE_URL = (import.meta as ImportMeta & { env: Record<string, string> }).env.VITE_API_URL ?? '/api'
+const BASE_URL = import.meta.env.VITE_API_URL ?? '/api'
 
 const client = axios.create({ baseURL: BASE_URL })
 
@@ -12,8 +12,11 @@ client.interceptors.request.use((config) => {
 
 client.interceptors.response.use(
   (res) => res,
-  (err: { response?: { status?: number } }) => {
-    if (err.response?.status === 401) {
+  (err: { config?: { url?: string }; response?: { status?: number } }) => {
+    // A 401 from the login call itself means "wrong credentials", not "session
+    // expired" — that should surface as an inline form error, not a redirect.
+    const isLoginRequest = err.config?.url?.includes('/auth/login')
+    if (err.response?.status === 401 && !isLoginRequest) {
       localStorage.removeItem('token')
       localStorage.removeItem('actor')
       window.location.href = '/login'
@@ -115,8 +118,10 @@ export interface TraceEvent {
   sequenceNumber: number
 }
 
+export type AnomalyType = 'STAGE_SKIPPED' | 'DUPLICATE_STAGE' | 'OUT_OF_ORDER' | 'CHAIN_TAMPERED'
+
 export interface Anomaly {
-  type: string
+  type: AnomalyType
   severity: 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL'
   message: string
   batchId: string
@@ -136,6 +141,19 @@ export interface PublicTrace {
   stageCount: number
   isValid: boolean
   hasAnomalies: boolean
+}
+
+export interface StatsOverview {
+  totalBatches: number
+  activeBatches: number
+  recalledBatches: number
+  totalEvents: number
+  anomalyCount: number
+}
+
+export interface StatsByStage {
+  stage: SupplyChainStage
+  count: number
 }
 
 // ── API calls ─────────────────────────────────────────────────────────────────
@@ -166,6 +184,8 @@ export const batchApi = {
   }) => client.post<Batch>('/batches', body).then((r) => r.data),
   recall: (id: string, reason: string) =>
     client.post<Batch>(`/batches/${id}/recall`, { reason }).then((r) => r.data),
+  qrSvg: (id: string) =>
+    client.get<string>(`/batches/${id}/qr`, { responseType: 'text' as const }).then((r) => r.data),
 }
 
 export const eventApi = {
@@ -185,4 +205,9 @@ export const traceApi = {
     client.get<TraceResult>(`/trace/${batchId}?direction=backward`).then((r) => r.data),
   public: (batchId: string) =>
     client.get<PublicTrace>(`/trace/public/${batchId}`).then((r) => r.data),
+}
+
+export const statsApi = {
+  overview: () => client.get<StatsOverview>('/stats/overview').then((r) => r.data),
+  byStage: () => client.get<StatsByStage[]>('/stats/by-stage').then((r) => r.data),
 }

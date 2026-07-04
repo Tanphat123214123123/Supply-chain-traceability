@@ -1,35 +1,74 @@
-import { InMemoryActorRepo, InMemoryBatchRepo, InMemoryEventRepo } from './repository/inMemory';
-import { AnomalyDetector } from './services/anomalyDetector';
-import { AuthService } from './services/authService';
-import { SupplyChainService } from './services/supplyChainService';
 import { ActorRole } from './domain/types';
+import { InMemoryActorRepo } from './repository/memory/actorRepo';
+import { InMemoryBatchRepo } from './repository/memory/batchRepo';
+import { InMemoryEventRepo } from './repository/memory/eventRepo';
+import { PostgresActorRepo } from './repository/postgres/actorRepo';
+import { PostgresBatchRepo } from './repository/postgres/batchRepo';
+import { PostgresEventRepo } from './repository/postgres/eventRepo';
+import { createPool } from './repository/postgres/pool';
+import { IActorRepo, IBatchRepo, IEventRepo } from './repository/interfaces';
+import { AuthService } from './services/authService';
+import { StatsService } from './services/statsService';
+import { SupplyChainService } from './services/supplyChainService';
+import { TraceService } from './services/traceService';
 
 export interface AppContext {
+  actorRepo: IActorRepo;
+  batchRepo: IBatchRepo;
+  eventRepo: IEventRepo;
   authService: AuthService;
   supplyChainService: SupplyChainService;
+  traceService: TraceService;
+  statsService: StatsService;
+  usingPostgres: boolean;
 }
 
-export async function bootstrap(jwtSecret: string): Promise<AppContext> {
-  const actorRepo = new InMemoryActorRepo();
-  const batchRepo = new InMemoryBatchRepo();
-  const eventRepo = new InMemoryEventRepo();
-  const anomalyDetector = new AnomalyDetector();
+const DEMO_ACCOUNTS: Array<{ name: string; email: string; role: ActorRole; organization: string }> = [
+  { name: 'Nguyễn Văn Nông', email: 'farmer@demo.com', role: 'FARMER', organization: 'Nông trại Đà Lạt' },
+  { name: 'Trần Thị Chế Biến', email: 'processor@demo.com', role: 'PROCESSOR', organization: 'Xưởng chế biến An Giang' },
+  { name: 'Lê Văn Kiểm Định', email: 'inspector@demo.com', role: 'INSPECTOR', organization: 'Trung tâm kiểm định VN' },
+  { name: 'Phạm Thị Phân Phối', email: 'distributor@demo.com', role: 'DISTRIBUTOR', organization: 'Công ty logistics ABC' },
+  { name: 'Hoàng Văn Bán Lẻ', email: 'retailer@demo.com', role: 'RETAILER', organization: 'Siêu thị XYZ' },
+  { name: 'Admin Hệ Thống', email: 'admin@demo.com', role: 'ADMIN', organization: 'TraceChain' },
+];
+
+const DEMO_PASSWORD = 'demo1234';
+
+async function seedDemoAccounts(authService: AuthService, actorRepo: IActorRepo): Promise<void> {
+  for (const account of DEMO_ACCOUNTS) {
+    const existing = await actorRepo.findByEmail(account.email);
+    if (existing) continue;
+    await authService.register(account.name, account.email, DEMO_PASSWORD, account.role, account.organization);
+  }
+}
+
+export async function bootstrap(): Promise<AppContext> {
+  const jwtSecret = process.env.JWT_SECRET ?? 'dev-secret-change-me';
+  const databaseUrl = process.env.DATABASE_URL;
+
+  let actorRepo: IActorRepo;
+  let batchRepo: IBatchRepo;
+  let eventRepo: IEventRepo;
+  let usingPostgres = false;
+
+  if (databaseUrl) {
+    const pool = createPool(databaseUrl);
+    actorRepo = new PostgresActorRepo(pool);
+    batchRepo = new PostgresBatchRepo(pool);
+    eventRepo = new PostgresEventRepo(pool);
+    usingPostgres = true;
+  } else {
+    actorRepo = new InMemoryActorRepo();
+    batchRepo = new InMemoryBatchRepo();
+    eventRepo = new InMemoryEventRepo();
+  }
 
   const authService = new AuthService(actorRepo, jwtSecret);
-  const supplyChainService = new SupplyChainService(batchRepo, actorRepo, eventRepo, anomalyDetector);
+  const supplyChainService = new SupplyChainService(batchRepo, eventRepo);
+  const traceService = new TraceService(batchRepo, eventRepo);
+  const statsService = new StatsService(batchRepo, eventRepo);
 
-  await Promise.all([
-    authService.register('Alice Farmer',      'farmer@demo.com',      'demo1234', ActorRole.FARMER,      'Green Farm Co.'),
-    authService.register('Bob Processor',     'processor@demo.com',   'demo1234', ActorRole.PROCESSOR,   'FoodTech Ltd.'),
-    authService.register('Carol Inspector',   'inspector@demo.com',   'demo1234', ActorRole.INSPECTOR,   'QualityCheck Bureau'),
-    authService.register('Dave Distributor',  'distributor@demo.com', 'demo1234', ActorRole.DISTRIBUTOR, 'LogiTrans Inc.'),
-    authService.register('Eve Retailer',      'retailer@demo.com',    'demo1234', ActorRole.RETAILER,    'FreshMart'),
-    authService.register('Frank Admin',       'admin@demo.com',       'demo1234', ActorRole.ADMIN,       'TraceChain HQ'),
-  ]);
+  await seedDemoAccounts(authService, actorRepo);
 
-  console.log('[bootstrap] Seeded 6 demo actors (password: demo1234)');
-  console.log('[bootstrap]   farmer@demo.com  processor@demo.com  inspector@demo.com');
-  console.log('[bootstrap]   distributor@demo.com  retailer@demo.com  admin@demo.com');
-
-  return { authService, supplyChainService };
+  return { actorRepo, batchRepo, eventRepo, authService, supplyChainService, traceService, statsService, usingPostgres };
 }

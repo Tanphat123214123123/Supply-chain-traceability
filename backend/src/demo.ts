@@ -1,63 +1,63 @@
-import { bootstrap } from './bootstrap';
-import { SupplyChainStage } from './domain/types';
+import { STAGE_ORDER } from './domain/types';
+import { InMemoryActorRepo } from './repository/memory/actorRepo';
+import { InMemoryBatchRepo } from './repository/memory/batchRepo';
+import { InMemoryEventRepo } from './repository/memory/eventRepo';
+import { AuthService } from './services/authService';
+import { SupplyChainService } from './services/supplyChainService';
+import { TraceService } from './services/traceService';
+import { verifyChain } from './ledger/hashChain';
 
-async function main(): Promise<void> {
-  console.log('=== TraceChain End-to-End Demo ===\n');
+async function main() {
+  const actorRepo = new InMemoryActorRepo();
+  const batchRepo = new InMemoryBatchRepo();
+  const eventRepo = new InMemoryEventRepo();
 
-  const { authService, supplyChainService } = await bootstrap('demo-secret');
+  const authService = new AuthService(actorRepo, 'demo-secret');
+  const supplyChain = new SupplyChainService(batchRepo, eventRepo);
+  const traceService = new TraceService(batchRepo, eventRepo);
 
-  const [farmer, processor, inspector, distributor, retailer] = await Promise.all([
-    authService.login({ email: 'farmer@demo.com',      password: 'demo1234' }),
-    authService.login({ email: 'processor@demo.com',   password: 'demo1234' }),
-    authService.login({ email: 'inspector@demo.com',   password: 'demo1234' }),
-    authService.login({ email: 'distributor@demo.com', password: 'demo1234' }),
-    authService.login({ email: 'retailer@demo.com',    password: 'demo1234' }),
-  ]);
-  console.log('All actors authenticated\n');
+  console.log('=== TraceChain demo: end-to-end supply chain flow ===\n');
 
-  const batch = await supplyChainService.createBatch(
-    {
-      productName: 'Organic Tomatoes',
-      productType: 'Vegetable',
-      origin: 'Da Lat, Vietnam',
-      quantity: 500,
-      unit: 'kg',
-      metadata: { variety: 'Cherry', season: '2025-Q1' },
-    },
-    farmer.actor.id,
-  );
-  console.log(`Batch created: ${batch.id}`);
-  console.log(`  ${batch.productName}  ${batch.quantity} ${batch.unit}  from ${batch.origin}\n`);
+  const farmer = await authService.register('Nông dân Demo', 'farmer@local', 'demo1234', 'FARMER', 'Nông trại A');
+  const processor = await authService.register('Chế biến Demo', 'processor@local', 'demo1234', 'PROCESSOR', 'Xưởng B');
+  const inspector = await authService.register('Kiểm định Demo', 'inspector@local', 'demo1234', 'INSPECTOR', 'Trung tâm C');
+  const distributor = await authService.register('Phân phối Demo', 'distributor@local', 'demo1234', 'DISTRIBUTOR', 'Logistics D');
+  const retailer = await authService.register('Bán lẻ Demo', 'retailer@local', 'demo1234', 'RETAILER', 'Siêu thị E');
 
-  const stages: Array<{ actorId: string; stage: SupplyChainStage; location: string }> = [
-    { actorId: farmer.actor.id,      stage: SupplyChainStage.HARVEST,        location: 'Da Lat Farm' },
-    { actorId: processor.actor.id,   stage: SupplyChainStage.PROCESSING,     location: 'Bien Hoa Factory' },
-    { actorId: inspector.actor.id,   stage: SupplyChainStage.QUALITY_CHECK,  location: 'QC Lab, HCMC' },
-    { actorId: processor.actor.id,   stage: SupplyChainStage.PACKAGING,      location: 'Packaging Center' },
-    { actorId: distributor.actor.id, stage: SupplyChainStage.DISTRIBUTION,   location: 'Distribution Hub, HCMC' },
-    { actorId: retailer.actor.id,    stage: SupplyChainStage.RETAIL,         location: 'FreshMart, District 1' },
-  ];
+  const batch = await supplyChain.createBatch(farmer, {
+    productName: 'Cà phê Arabica',
+    productType: 'Nông sản',
+    origin: 'Đà Lạt, Lâm Đồng',
+    quantity: 500,
+    unit: 'kg',
+  });
+  console.log(`1. Tạo lô hàng "${batch.productName}" — id ${batch.id}\n`);
 
-  for (const s of stages) {
-    const ev = await supplyChainService.recordEvent(
-      { batchId: batch.id, stage: s.stage, location: s.location },
-      s.actorId,
-    );
-    console.log(`  [seq ${ev.sequenceNumber}] ${s.stage.padEnd(15)} hash: ${ev.hash.slice(0, 20)}...`);
+  await supplyChain.recordEvent(farmer, { batchId: batch.id, stage: 'HARVEST', location: 'Đà Lạt' });
+  await supplyChain.recordEvent(processor, { batchId: batch.id, stage: 'PROCESSING', location: 'Xưởng B' });
+  await supplyChain.recordEvent(inspector, { batchId: batch.id, stage: 'QUALITY_CHECK', location: 'Trung tâm C' });
+  await supplyChain.recordEvent(processor, { batchId: batch.id, stage: 'PACKAGING', location: 'Xưởng B' });
+  await supplyChain.recordEvent(distributor, { batchId: batch.id, stage: 'DISTRIBUTION', location: 'Kho D' });
+  await supplyChain.recordEvent(retailer, { batchId: batch.id, stage: 'RETAIL', location: 'Siêu thị E' });
+  console.log('2. Ghi 6 sự kiện qua toàn bộ chuỗi cung ứng (thu hoạch → bán lẻ)\n');
+
+  const result = await traceService.trace(batch.id);
+  console.log(`3. Truy xuất thuận chiều: ${result.events.length} sự kiện, chuỗi hợp lệ = ${result.isValid}`);
+  for (const e of result.events) {
+    console.log(`   seq ${e.sequenceNumber} [${e.stage}] hash=${e.hash.slice(0, 12)}… prevHash=${e.prevHash.slice(0, 12)}…`);
   }
+  console.log();
 
-  console.log('\n--- Forward trace ---');
-  const trace = await supplyChainService.traceForward(batch.id);
-  console.log(`Chain valid : ${trace.isValid}`);
-  console.log(`Events      : ${trace.events.length}`);
-  console.log(`Anomalies   : ${trace.anomalies.length}`);
+  console.log('4. Giả lập can thiệp dữ liệu (sửa location của 1 sự kiện đã ghi)...');
+  const tampered = [...result.events];
+  tampered[2] = { ...tampered[2], location: 'ĐỊA ĐIỂM BỊ SỬA' };
+  console.log(`   Chuỗi sau khi bị sửa vẫn hợp lệ? ${verifyChain(tampered)} (kỳ vọng: false)\n`);
 
-  console.log('\n--- Hash chain ---');
-  for (const ev of trace.events) {
-    console.log(`  seq ${ev.sequenceNumber}  ${ev.stage.padEnd(15)} ← ${ev.prevHash.slice(0, 12)}...  →  ${ev.hash.slice(0, 12)}...`);
-  }
-
-  console.log('\n=== Demo complete ===');
+  console.log(`5. Thứ tự các khâu chuẩn: ${STAGE_ORDER.join(' → ')}`);
+  console.log('\n=== Demo hoàn tất ===');
 }
 
-main().catch(console.error);
+main().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});

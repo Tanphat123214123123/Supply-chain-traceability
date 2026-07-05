@@ -26,7 +26,10 @@ services:
       - "3000:3000"
     environment:
       PORT: 3000
-      JWT_SECRET: change-this-in-production
+      # Dev-only placeholders — real deployments must inject their own via
+      # secrets/env, never commit an actual value here.
+      JWT_SECRET: dev-only-jwt-secret-do-not-use-in-production
+      LEDGER_SIGNING_KEY: dev-only-ledger-signing-key-do-not-use-in-production
       DATABASE_URL: postgres://tracechain:tracechain_dev@postgres:5432/tracechain
       NODE_ENV: development
       PUBLIC_ORIGIN: http://localhost:5173
@@ -47,8 +50,10 @@ services:
       - "5173:80"
     depends_on:
       - backend
-    environment:
-      VITE_API_URL: http://backend:3000/api
+    # No VITE_API_URL here: Vite bakes import.meta.env.VITE_* in at BUILD time,
+    # so a runtime container env var would silently do nothing. The frontend
+    # calls same-origin '/api' and '/socket.io', which nginx.conf reverse-proxies
+    # to the backend service — see nginx.conf.
 
 volumes:
   postgres_data:

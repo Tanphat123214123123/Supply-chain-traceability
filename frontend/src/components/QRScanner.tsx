@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
+import { inputClass } from './ui/field'
+import { buttonClass } from './ui/Button'
 
 interface Props {
   onScan: (result: string) => void
@@ -61,7 +63,7 @@ export default function QRScanner({ onScan }: Props) {
   if (supported === false) {
     return (
       <div className="space-y-3">
-        <p className="text-sm text-amber-600 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+        <p className="text-sm text-amber-700 bg-amber-50 border border-amber-200 dark:text-amber-400 dark:bg-amber-500/10 dark:border-amber-500/20 rounded-xl px-3.5 py-2.5">
           Trình duyệt không hỗ trợ quét QR tự động. Nhập ID lô hàng thủ công.
         </p>
         <div className="flex gap-2">
@@ -70,13 +72,9 @@ export default function QRScanner({ onScan }: Props) {
             value={manualId}
             onChange={(e) => setManualId(e.target.value)}
             placeholder="Nhập ID lô hàng..."
-            className="flex-1 border border-gray-300 rounded-lg px-3 py-2 text-sm
-                       focus:outline-none focus:ring-2 focus:ring-blue-500"
+            className={`flex-1 ${inputClass}`}
           />
-          <button
-            onClick={() => manualId.trim() && onScan(manualId.trim())}
-            className="bg-blue-600 text-white text-sm px-4 py-2 rounded-lg hover:bg-blue-700"
-          >
+          <button onClick={() => manualId.trim() && onScan(manualId.trim())} className={buttonClass('primary', 'md')}>
             Tra cứu
           </button>
         </div>
@@ -87,15 +85,19 @@ export default function QRScanner({ onScan }: Props) {
   return (
     <div className="space-y-3">
       {cameraError ? (
-        <p className="text-sm text-red-500 text-center">{cameraError}</p>
+        <p className="text-sm text-rose-500 dark:text-rose-400 text-center">{cameraError}</p>
       ) : (
-        <div className="relative rounded-2xl overflow-hidden bg-black aspect-square max-w-xs mx-auto">
+        <div className="relative rounded-3xl overflow-hidden bg-black aspect-square max-w-xs mx-auto shadow-glow">
           <video ref={videoRef} className="w-full h-full object-cover" muted playsInline />
-          {/* Viewfinder overlay */}
+          {/* Viewfinder overlay with corner brackets */}
           <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-            <div className="w-48 h-48 border-2 border-white/70 rounded-xl" />
+            <div className="relative w-48 h-48">
+              {(['top-0 left-0 border-t-2 border-l-2 rounded-tl-xl', 'top-0 right-0 border-t-2 border-r-2 rounded-tr-xl', 'bottom-0 left-0 border-b-2 border-l-2 rounded-bl-xl', 'bottom-0 right-0 border-b-2 border-r-2 rounded-br-xl'] as const).map((pos) => (
+                <div key={pos} className={`absolute w-8 h-8 border-emerald-400 ${pos}`} />
+              ))}
+            </div>
           </div>
-          <p className="absolute bottom-3 left-0 right-0 text-center text-white/70 text-xs">
+          <p className="absolute bottom-3 left-0 right-0 text-center text-white/80 text-xs font-medium">
             Đặt mã QR vào khung
           </p>
         </div>
@@ -108,13 +110,9 @@ export default function QRScanner({ onScan }: Props) {
           value={manualId}
           onChange={(e) => setManualId(e.target.value)}
           placeholder="Hoặc nhập ID thủ công..."
-          className="flex-1 border border-gray-300 rounded-lg px-3 py-2 text-sm
-                     focus:outline-none focus:ring-2 focus:ring-blue-500"
+          className={`flex-1 ${inputClass}`}
         />
-        <button
-          onClick={() => manualId.trim() && onScan(manualId.trim())}
-          className="bg-blue-600 text-white text-sm px-3 py-2 rounded-lg hover:bg-blue-700"
-        >
+        <button onClick={() => manualId.trim() && onScan(manualId.trim())} className={buttonClass('primary', 'md')}>
           Tra cứu
         </button>
       </div>

@@ -1,3 +1,5 @@
+import Badge from './ui/Badge'
+
 interface Props {
   isValid: boolean
   hasAnomalies: boolean
@@ -5,25 +7,12 @@ interface Props {
 
 export default function VerifyBadge({ isValid, hasAnomalies }: Props) {
   if (!isValid) {
-    return (
-      <span className="inline-flex items-center gap-1.5 bg-red-100 text-red-700 text-xs
-                       font-semibold px-2.5 py-1 rounded-full whitespace-nowrap">
-        🚨 Chuỗi bị can thiệp
-      </span>
-    )
+    return <Badge tone="danger">🚨 Chuỗi bị can thiệp</Badge>
   }
   if (hasAnomalies) {
-    return (
-      <span className="inline-flex items-center gap-1.5 bg-amber-100 text-amber-700 text-xs
-                       font-semibold px-2.5 py-1 rounded-full whitespace-nowrap">
-        ⚠ Có bất thường
-      </span>
-    )
+    // Not "⚠ ..." — that glyph renders oversized in some browsers' emoji
+    // fallback font and visually bleeds outside this badge's tight line-height.
+    return <Badge tone="warning">Có bất thường</Badge>
   }
-  return (
-    <span className="inline-flex items-center gap-1.5 bg-green-100 text-green-700 text-xs
-                     font-semibold px-2.5 py-1 rounded-full whitespace-nowrap">
-      ✓ Đã xác thực
-    </span>
-  )
+  return <Badge tone="success">✓ Đã xác thực</Badge>
 }

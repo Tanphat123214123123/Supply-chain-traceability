@@ -28,5 +28,8 @@ Thumbs.db
 # Test coverage
 coverage/
 
+# In-memory-mode local data snapshot (backend/src/persistence/snapshot.ts)
+backend/.data/
+
 # TypeScript
 *.tsbuildinfo

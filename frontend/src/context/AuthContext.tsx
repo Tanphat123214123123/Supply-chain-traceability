@@ -1,5 +1,5 @@
-import { createContext, useContext, useEffect, useState, ReactNode } from 'react'
-import { Actor, ActorRole, authApi } from '../api/client'
+import { createContext, useContext, useEffect, useRef, useState, ReactNode } from 'react'
+import { Actor, ActorRole, authApi, setAccessToken } from '../api/client'
 
 interface AuthState {
   actor: Actor | null
@@ -17,30 +17,41 @@ const AuthContext = createContext<AuthContextValue | null>(null)
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<AuthState>({ actor: null, token: null, isLoading: true })
+  // Guards against React StrictMode's dev-only double-invoke of this effect:
+  // the refresh token is single-use (rotated on every exchange), so firing
+  // this call twice on one mount would have the second call race against an
+  // already-revoked cookie, 401, and hard-redirect — looping on every
+  // subsequent remount. A ref (unlike effect cleanup) survives both invokes.
+  const didInitialRefresh = useRef(false)
 
   useEffect(() => {
-    const token = localStorage.getItem('token')
-    const raw = localStorage.getItem('actor')
-    if (token && raw) {
-      try {
-        setState({ token, actor: JSON.parse(raw) as Actor, isLoading: false })
-        return
-      } catch {
-        // corrupted storage — fall through
-      }
-    }
-    setState((s) => ({ ...s, isLoading: false }))
+    if (didInitialRefresh.current) return
+    didInitialRefresh.current = true
+
+    // The access token lives only in memory, so a page reload always needs a
+    // fresh one — silently exchange the httpOnly refreshToken cookie for a new
+    // access token instead of trusting anything persisted client-side.
+    authApi
+      .refresh() // already calls setAccessToken + caches 'actor' in localStorage internally
+      .then(({ token, actor }) => {
+        setState({ token, actor, isLoading: false })
+      })
+      .catch(() => {
+        localStorage.removeItem('actor')
+        setState({ token: null, actor: null, isLoading: false })
+      })
   }, [])
 
   const login = async (email: string, password: string) => {
     const { token, actor } = await authApi.login(email, password)
-    localStorage.setItem('token', token)
+    setAccessToken(token)
     localStorage.setItem('actor', JSON.stringify(actor))
     setState({ token, actor, isLoading: false })
   }
 
   const logout = () => {
-    localStorage.removeItem('token')
+    authApi.logout().catch((err) => console.error('Logout call failed (clearing local session anyway):', err))
+    setAccessToken(null)
     localStorage.removeItem('actor')
     setState({ token: null, actor: null, isLoading: false })
   }

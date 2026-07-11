@@ -11,15 +11,29 @@ export function statsRoutes(statsService: StatsService, authService: AuthService
 
   router.get(
     '/overview',
-    asyncHandler(async (_req, res) => {
-      res.json(await statsService.overview());
+    asyncHandler(async (req, res) => {
+      res.json(await statsService.overview(req.actor!.tenantId));
     }),
   );
 
   router.get(
     '/by-stage',
-    asyncHandler(async (_req, res) => {
-      res.json(await statsService.byStage());
+    asyncHandler(async (req, res) => {
+      res.json(await statsService.byStage(req.actor!.tenantId));
+    }),
+  );
+
+  router.get(
+    '/by-day',
+    asyncHandler(async (req, res) => {
+      res.json(await statsService.byDay(req.actor!.tenantId));
+    }),
+  );
+
+  router.get(
+    '/by-origin',
+    asyncHandler(async (req, res) => {
+      res.json(await statsService.byOrigin(req.actor!.tenantId));
     }),
   );
 

@@ -5,6 +5,8 @@ import { AuthService } from '../../services/authService';
 import { SupplyChainService } from '../../services/supplyChainService';
 import { requireAuth } from '../middleware/auth';
 import { asyncHandler } from '../middleware/error';
+import { validateBody } from '../middleware/validate';
+import { recordEventSchema } from '../../validation/schemas';
 
 export function eventRoutes(
   supplyChainService: SupplyChainService,
@@ -16,6 +18,7 @@ export function eventRoutes(
 
   router.post(
     '/',
+    validateBody(recordEventSchema),
     asyncHandler(async (req, res) => {
       const dto = req.body as RecordEventDTO;
       const event = await supplyChainService.recordEvent(req.actor!, dto);

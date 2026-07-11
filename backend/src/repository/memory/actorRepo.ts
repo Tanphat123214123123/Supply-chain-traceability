@@ -19,4 +19,26 @@ export class InMemoryActorRepo implements IActorRepo {
     }
     return null;
   }
+
+  async findAllByTenant(tenantId: string): Promise<Actor[]> {
+    return [...this.actors.values()]
+      .filter((a) => a.tenantId === tenantId)
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  async update(actor: Actor): Promise<Actor> {
+    this.actors.set(actor.id, actor);
+    return actor;
+  }
+
+  /** Snapshot-only: dumps every record for persistence, ignoring tenant scoping. */
+  _dump(): Actor[] {
+    return [...this.actors.values()];
+  }
+
+  /** Snapshot-only: replaces all in-memory data with the given rows. */
+  _load(rows: Actor[]): void {
+    this.actors.clear();
+    for (const row of rows) this.actors.set(row.id, row);
+  }
 }

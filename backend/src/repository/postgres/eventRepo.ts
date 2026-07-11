@@ -64,6 +64,14 @@ export class PostgresEventRepo implements IEventRepo {
     return result.rows.map(toEvent);
   }
 
+  async findByActorId(actorId: string): Promise<TraceEvent[]> {
+    const result = await this.pool.query<EventRow>(
+      'SELECT * FROM trace_events WHERE actor_id = $1 ORDER BY timestamp DESC',
+      [actorId],
+    );
+    return result.rows.map(toEvent);
+  }
+
   async countAll(): Promise<number> {
     const result = await this.pool.query<{ count: string }>('SELECT count(*)::text AS count FROM trace_events');
     return Number(result.rows[0]?.count ?? 0);
@@ -76,5 +84,34 @@ export class PostgresEventRepo implements IEventRepo {
     );
     const row = result.rows[0];
     return row ? { sequenceNumber: row.sequence_number, hash: row.hash } : null;
+  }
+
+  async countByStage(): Promise<Partial<Record<SupplyChainStage, number>>> {
+    const result = await this.pool.query<{ stage: SupplyChainStage; count: string }>(
+      'SELECT stage, count(*)::text AS count FROM trace_events GROUP BY stage',
+    );
+    const counts: Partial<Record<SupplyChainStage, number>> = {};
+    for (const row of result.rows) counts[row.stage] = Number(row.count);
+    return counts;
+  }
+
+  async countAllForBatchIds(batchIds: string[]): Promise<number> {
+    if (batchIds.length === 0) return 0;
+    const result = await this.pool.query<{ count: string }>(
+      'SELECT count(*)::text AS count FROM trace_events WHERE batch_id = ANY($1::uuid[])',
+      [batchIds],
+    );
+    return Number(result.rows[0]?.count ?? 0);
+  }
+
+  async countByStageForBatchIds(batchIds: string[]): Promise<Partial<Record<SupplyChainStage, number>>> {
+    if (batchIds.length === 0) return {};
+    const result = await this.pool.query<{ stage: SupplyChainStage; count: string }>(
+      'SELECT stage, count(*)::text AS count FROM trace_events WHERE batch_id = ANY($1::uuid[]) GROUP BY stage',
+      [batchIds],
+    );
+    const counts: Partial<Record<SupplyChainStage, number>> = {};
+    for (const row of result.rows) counts[row.stage] = Number(row.count);
+    return counts;
   }
 }

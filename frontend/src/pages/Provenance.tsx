@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useParams } from 'react-router-dom'
+import { CircleX, ShieldCheck, TriangleAlert, Siren, CircleCheck } from 'lucide-react'
 import { traceApi, PublicTrace, STAGE_LABELS, STAGE_ORDER, STAGE_ICONS } from '../api/client'
 
 export default function Provenance() {
@@ -18,19 +19,22 @@ export default function Provenance() {
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-gradient-to-br from-green-50 to-blue-50 flex items-center justify-center">
-        <p className="text-gray-400 text-sm">Đang tra cứu nguồn gốc...</p>
+      <div className="min-h-screen bg-gradient-to-br from-emerald-50 via-white to-brand-50 dark:from-slate-950 dark:via-slate-950 dark:to-slate-900 flex items-center justify-center">
+        <div className="flex items-center gap-2 text-slate-400 dark:text-slate-500 text-sm">
+          <span className="w-4 h-4 rounded-full border-2 border-slate-200 dark:border-slate-700 border-t-brand-500 dark:border-t-brand-400 animate-spin" />
+          Đang tra cứu nguồn gốc...
+        </div>
       </div>
     )
   }
 
   if (error || !data) {
     return (
-      <div className="min-h-screen bg-gray-50 flex items-center justify-center p-4">
+      <div className="min-h-screen bg-slate-50 dark:bg-slate-950 flex items-center justify-center p-4">
         <div className="text-center">
-          <div className="text-5xl mb-3">❌</div>
-          <p className="text-red-500 font-medium">{error || 'Không tìm thấy lô hàng'}</p>
-          <p className="text-gray-400 text-sm mt-2">Mã lô hàng: {batchId}</p>
+          <CircleX className="w-12 h-12 mx-auto mb-3 text-rose-500 dark:text-rose-400" />
+          <p className="text-rose-500 dark:text-rose-400 font-medium">{error || 'Không tìm thấy lô hàng'}</p>
+          <p className="text-slate-400 dark:text-slate-500 text-sm mt-2">Mã lô hàng: {batchId}</p>
         </div>
       </div>
     )
@@ -43,60 +47,66 @@ export default function Provenance() {
   const isRecalled = data.batch.isRecalled
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-green-50 to-blue-50 p-4">
-      <div className="max-w-sm mx-auto pt-6 pb-12">
+    <div className="min-h-screen bg-gradient-to-br from-emerald-50 via-white to-brand-50 dark:from-slate-950 dark:via-slate-950 dark:to-slate-900 p-4">
+      <div className="max-w-sm mx-auto pt-8 pb-12">
         {/* Header */}
-        <div className="text-center mb-6">
-          <div className="text-6xl mb-3">{isRecalled ? '🚨' : '✅'}</div>
-          <h1 className="text-2xl font-bold text-gray-900">{data.batch.productName}</h1>
-          <p className="text-gray-500 text-sm mt-1">{data.batch.productType}</p>
+        <div className="text-center mb-6 animate-slide-up">
+          <div className="flex justify-center mb-3">
+            {isRecalled
+              ? <Siren className="w-14 h-14 text-rose-500 dark:text-rose-400" />
+              : <CircleCheck className="w-14 h-14 text-emerald-500 dark:text-emerald-400" />}
+          </div>
+          <h1 className="text-2xl font-bold text-slate-900 dark:text-slate-50 tracking-tight">{data.batch.productName}</h1>
+          <p className="text-slate-500 dark:text-slate-400 text-sm mt-1">{data.batch.productType}</p>
         </div>
 
         {/* Chain validity */}
-        <div className={`rounded-2xl p-4 mb-4 text-center ${
+        <div className={`rounded-2xl p-4 mb-4 text-center shadow-card dark:shadow-none animate-slide-up [animation-delay:80ms] ${
           data.isValid
-            ? 'bg-green-100 border border-green-200'
-            : 'bg-red-100 border border-red-200'
+            ? 'bg-emerald-50 border border-emerald-200 dark:bg-emerald-500/10 dark:border-emerald-500/20'
+            : 'bg-rose-50 border border-rose-200 dark:bg-rose-500/10 dark:border-rose-500/20'
         }`}>
-          <p className={`text-sm font-semibold ${data.isValid ? 'text-green-700' : 'text-red-700'}`}>
+          <p className={`text-sm font-semibold flex items-center justify-center gap-1.5 ${data.isValid ? 'text-emerald-700 dark:text-emerald-400' : 'text-rose-700 dark:text-rose-400'}`}>
             {data.isValid
-              ? '🛡 Dữ liệu hợp lệ — Không bị can thiệp'
-              : '⚠ Dữ liệu có dấu hiệu bất thường'}
+              ? <><ShieldCheck className="w-4 h-4" /> Dữ liệu hợp lệ — Không bị can thiệp</>
+              : <><TriangleAlert className="w-4 h-4" /> Dữ liệu có dấu hiệu bất thường</>}
           </p>
           {data.hasAnomalies && data.isValid && (
-            <p className="text-xs text-amber-600 mt-1">Phát hiện một số bất thường trong quá trình</p>
+            <p className="text-xs text-amber-600 dark:text-amber-400 mt-1">Phát hiện một số bất thường trong quá trình</p>
           )}
         </div>
 
         {/* Recall banner */}
         {isRecalled && (
-          <div className="bg-red-50 border-2 border-red-300 rounded-2xl p-4 mb-4">
-            <p className="font-bold text-red-700 text-center">⚠ LÔ HÀNG ĐÃ BỊ THU HỒI</p>
+          <div className="bg-rose-50 border-2 border-rose-300 dark:bg-rose-500/10 dark:border-rose-500/30 rounded-2xl p-4 mb-4 shadow-card dark:shadow-none animate-slide-up [animation-delay:120ms]">
+            <p className="font-bold text-rose-700 dark:text-rose-400 text-center flex items-center justify-center gap-1.5">
+              <TriangleAlert className="w-4 h-4" /> LÔ HÀNG ĐÃ BỊ THU HỒI
+            </p>
             {data.batch.recallReason && (
-              <p className="text-red-600 text-sm text-center mt-1">{data.batch.recallReason}</p>
+              <p className="text-rose-600 dark:text-rose-400/90 text-sm text-center mt-1">{data.batch.recallReason}</p>
             )}
           </div>
         )}
 
         {/* Product details */}
-        <div className="bg-white rounded-2xl border border-gray-200 p-4 mb-4 space-y-3">
-          <h2 className="text-sm font-semibold text-gray-700">Thông tin sản phẩm</h2>
+        <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-100 dark:border-slate-800 shadow-card dark:shadow-none p-4 mb-4 space-y-3 animate-slide-up [animation-delay:160ms]">
+          <h2 className="text-sm font-semibold text-slate-700 dark:text-slate-300">Thông tin sản phẩm</h2>
           <div className="space-y-2">
             <div className="flex justify-between text-sm">
-              <span className="text-gray-500">Xuất xứ</span>
-              <span className="font-medium text-gray-900">{data.batch.origin}</span>
+              <span className="text-slate-500 dark:text-slate-400">Xuất xứ</span>
+              <span className="font-medium text-slate-900 dark:text-slate-100">{data.batch.origin}</span>
             </div>
             <div className="flex justify-between text-sm">
-              <span className="text-gray-500">Khâu hiện tại</span>
-              <span className="font-medium text-gray-900">
+              <span className="text-slate-500 dark:text-slate-400">Khâu hiện tại</span>
+              <span className="font-medium text-slate-900 dark:text-slate-100">
                 {data.batch.currentStage
                   ? STAGE_LABELS[data.batch.currentStage]
                   : 'Chưa bắt đầu'}
               </span>
             </div>
             <div className="flex justify-between text-sm">
-              <span className="text-gray-500">Số khâu hoàn thành</span>
-              <span className="font-medium text-gray-900">
+              <span className="text-slate-500 dark:text-slate-400">Số khâu hoàn thành</span>
+              <span className="font-medium text-slate-900 dark:text-slate-100">
                 {data.stageCount} / {STAGE_ORDER.length}
               </span>
             </div>
@@ -104,31 +114,32 @@ export default function Provenance() {
         </div>
 
         {/* Journey progress */}
-        <div className="bg-white rounded-2xl border border-gray-200 p-4 mb-4">
-          <h2 className="text-sm font-semibold text-gray-700 mb-4">Hành trình sản phẩm</h2>
+        <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-100 dark:border-slate-800 shadow-card dark:shadow-none p-4 mb-4 animate-slide-up [animation-delay:200ms]">
+          <h2 className="text-sm font-semibold text-slate-700 dark:text-slate-300 mb-4">Hành trình sản phẩm</h2>
           <div className="space-y-3">
             {STAGE_ORDER.map((stage, i) => {
               const done = i <= currentIdx
               const current = i === currentIdx
+              const StageIcon = STAGE_ICONS[stage]
               return (
                 <div key={stage} className="flex items-center gap-3">
                   <div className={`
-                    w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold flex-shrink-0
+                    w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold flex-shrink-0 transition-all
                     ${done
                       ? current
-                        ? 'bg-blue-500 text-white ring-2 ring-blue-300 ring-offset-1'
-                        : 'bg-green-500 text-white'
-                      : 'bg-gray-100 text-gray-400'}
+                        ? 'bg-gradient-to-br from-brand-500 to-brand-600 text-white ring-4 ring-brand-100 dark:ring-brand-500/20'
+                        : 'bg-gradient-to-br from-emerald-500 to-emerald-600 text-white'
+                      : 'bg-slate-100 dark:bg-slate-800 text-slate-400 dark:text-slate-500'}
                   `}>
-                    {done ? (current ? STAGE_ICONS[stage] : '✓') : i + 1}
+                    {done ? (current ? <StageIcon className="w-4 h-4" /> : <CircleCheck className="w-4 h-4" />) : i + 1}
                   </div>
                   <div className="flex-1">
-                    <p className={`text-sm ${done ? 'text-gray-900 font-medium' : 'text-gray-400'}`}>
+                    <p className={`text-sm ${done ? 'text-slate-900 dark:text-slate-100 font-medium' : 'text-slate-400 dark:text-slate-500'}`}>
                       {STAGE_LABELS[stage]}
                     </p>
                   </div>
                   {current && (
-                    <span className="text-xs bg-blue-100 text-blue-600 px-2 py-0.5 rounded-full">
+                    <span className="text-xs bg-brand-50 text-brand-600 dark:bg-brand-500/10 dark:text-brand-400 px-2 py-0.5 rounded-full font-medium">
                       Hiện tại
                     </span>
                   )}
@@ -139,9 +150,9 @@ export default function Provenance() {
         </div>
 
         {/* Footer */}
-        <div className="text-center">
-          <p className="text-xs text-gray-400 font-mono break-all">ID: {batchId}</p>
-          <p className="text-xs text-gray-300 mt-1">Powered by TraceChain · Blockchain-based traceability</p>
+        <div className="text-center animate-fade-in">
+          <p className="text-xs text-slate-400 dark:text-slate-500 font-mono break-all">ID: {batchId}</p>
+          <p className="text-xs text-slate-300 dark:text-slate-600 mt-1">Powered by TraceChain · Chuỗi hash minh bạch, kiểm chứng được</p>
         </div>
       </div>
     </div>

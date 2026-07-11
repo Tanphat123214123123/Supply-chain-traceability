@@ -1,165 +1,248 @@
-import { useEffect, useState } from 'react'
+import { lazy, Suspense, useEffect, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
+import { Hand, Package, Activity, Siren } from 'lucide-react'
 import { useAuth } from '../context/AuthContext'
-import { batchApi, statsApi, Batch, StatsByStage, ROLE_LABELS, STAGE_LABELS } from '../api/client'
+import { batchApi, statsApi, Batch, StatsOverview, STAGE_LABELS, STAGE_ORDER } from '../api/client'
+import PageHeader from '../components/ui/PageHeader'
+import StatCard from '../components/ui/StatCard'
+import EmptyState from '../components/ui/EmptyState'
+import Badge from '../components/ui/Badge'
+import { buttonClass } from '../components/ui/Button'
+import { cardClass } from '../components/ui/Card'
+import { inputClass } from '../components/ui/field'
+import { SkeletonCardList } from '../components/ui/Skeleton'
 
-function StageChart() {
-  const [data, setData] = useState<StatsByStage[]>([])
+const PAGE_SIZE = 10
+
+// recharts (~370KB) is only needed for this one ADMIN-only chart — split into
+// its own chunk instead of shipping it to every visitor's initial bundle.
+const StageChart = lazy(() => import('../components/StageChart'))
+
+function StagePill({ stage }: { stage: Batch['currentStage'] }) {
+  if (!stage) return <Badge tone="neutral">Chưa bắt đầu</Badge>
+  return <Badge tone="brand">{STAGE_LABELS[stage]}</Badge>
+}
+
+function BatchCard({ batch }: { batch: Batch }) {
+  return (
+    <Link to={`/batch/${batch.id}`} className={cardClass({ hover: true, padding: 'md', className: 'flex items-center justify-between gap-3' })}>
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className="font-semibold text-slate-900 dark:text-slate-50 truncate">{batch.productName}</span>
+          {batch.isRecalled && <Badge tone="danger">Thu hồi</Badge>}
+        </div>
+        <p className="text-sm text-slate-500 dark:text-slate-400 mt-0.5 truncate">
+          {batch.productType} · {batch.origin} · {batch.quantity} {batch.unit}
+        </p>
+        <p className="text-xs text-slate-300 dark:text-slate-600 mt-0.5 font-mono">{batch.id.slice(0, 8)}…</p>
+      </div>
+      <div className="flex flex-col items-end gap-1 flex-shrink-0">
+        <StagePill stage={batch.currentStage} />
+        <span className="text-xs text-slate-400 dark:text-slate-500">{new Date(batch.createdAt).toLocaleDateString('vi-VN')}</span>
+      </div>
+    </Link>
+  )
+}
+
+function KanbanBoard() {
+  const [batches, setBatches] = useState<Batch[] | null>(null)
 
   useEffect(() => {
-    statsApi.byStage().then(setData).catch(() => {})
+    batchApi.list({ page: 1, pageSize: 200 }).then((res) => setBatches(res.items)).catch(() => setBatches([]))
   }, [])
 
-  if (data.every((d) => d.count === 0)) return null
+  if (!batches) return <SkeletonCardList rows={4} className="mt-2" />
+
+  const columns: Array<{ key: string; label: string; items: Batch[] }> = [
+    { key: 'NONE', label: 'Chưa bắt đầu', items: batches.filter((b) => !b.currentStage) },
+    ...STAGE_ORDER.map((stage) => ({
+      key: stage,
+      label: STAGE_LABELS[stage],
+      items: batches.filter((b) => b.currentStage === stage),
+    })),
+  ]
 
   return (
-    <div className="bg-white rounded-xl border border-gray-200 p-4 mb-5">
-      <h3 className="text-sm font-semibold text-gray-700 mb-3">Phân bổ sự kiện theo khâu</h3>
-      <ResponsiveContainer width="100%" height={220}>
-        <BarChart data={data.map((d) => ({ ...d, label: STAGE_LABELS[d.stage] }))}>
-          <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f0f0f0" />
-          <XAxis dataKey="label" tick={{ fontSize: 11 }} interval={0} angle={-20} textAnchor="end" height={50} />
-          <YAxis allowDecimals={false} tick={{ fontSize: 11 }} />
-          <Tooltip />
-          <Bar dataKey="count" fill="#2563eb" radius={[4, 4, 0, 0]} />
-        </BarChart>
-      </ResponsiveContainer>
+    <div className="flex gap-3 overflow-x-auto pb-2">
+      {columns.map((col) => (
+        <div key={col.key} className="bg-slate-100/70 dark:bg-slate-800/70 rounded-2xl p-3 w-64 flex-shrink-0">
+          <h3 className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide mb-2 flex items-center justify-between">
+            {col.label}
+            <span className="bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-300 rounded-full px-2 py-0.5 shadow-sm">{col.items.length}</span>
+          </h3>
+          <div className="space-y-2">
+            {col.items.map((b) => (
+              <Link
+                key={b.id}
+                to={`/batch/${b.id}`}
+                className="block bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 p-3 hover:border-brand-300 dark:hover:border-brand-500/40 hover:shadow-card-hover transition-all"
+              >
+                <p className="text-sm font-medium text-slate-900 dark:text-slate-50 truncate">{b.productName}</p>
+                <p className="text-xs text-slate-400 dark:text-slate-500 truncate">{b.origin}</p>
+                {b.isRecalled && (
+                  <span className="mt-1 inline-block">
+                    <Badge tone="danger">Thu hồi</Badge>
+                  </span>
+                )}
+              </Link>
+            ))}
+            {col.items.length === 0 && <p className="text-xs text-slate-300 dark:text-slate-600 text-center py-3">— trống —</p>}
+          </div>
+        </div>
+      ))}
     </div>
   )
 }
 
-function StagePill({ stage }: { stage: Batch['currentStage'] }) {
-  if (!stage) {
-    return <span className="text-xs bg-gray-100 text-gray-400 px-2 py-0.5 rounded-full">Chưa bắt đầu</span>
-  }
-  return <span className="text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full">{STAGE_LABELS[stage]}</span>
-}
-
 export default function Dashboard() {
-  const { actor, logout } = useAuth()
+  const { actor } = useAuth()
   const navigate = useNavigate()
+  const [view, setView] = useState<'list' | 'kanban'>('list')
   const [batches, setBatches] = useState<Batch[]>([])
+  const [total, setTotal] = useState(0)
+  const [page, setPage] = useState(1)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  const [searchInput, setSearchInput] = useState('')
   const [search, setSearch] = useState('')
+  const [overview, setOverview] = useState<StatsOverview | null>(null)
+
+  // Debounce the search box so we don't fire a request on every keystroke.
+  useEffect(() => {
+    const handle = setTimeout(() => {
+      setSearch(searchInput)
+      setPage(1)
+    }, 300)
+    return () => clearTimeout(handle)
+  }, [searchInput])
 
   useEffect(() => {
-    batchApi.list()
-      .then(setBatches)
+    if (view !== 'list') return
+    setLoading(true)
+    setError('')
+    batchApi.list({ page, pageSize: PAGE_SIZE, search: search || undefined })
+      .then((res) => {
+        setBatches(res.items)
+        setTotal(res.total)
+      })
       .catch(() => setError('Không thể tải danh sách lô hàng'))
       .finally(() => setLoading(false))
-  }, [])
+  }, [page, search, view])
 
-  const filtered = batches.filter(
-    (b) =>
-      b.productName.toLowerCase().includes(search.toLowerCase()) ||
-      b.origin.toLowerCase().includes(search.toLowerCase()) ||
-      b.id.startsWith(search),
-  )
+  useEffect(() => {
+    statsApi.overview().then(setOverview).catch(() => {})
+  }, [batches])
+
+  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE))
 
   return (
-    <div className="min-h-screen bg-gray-50">
-      {/* Topbar */}
-      <header className="bg-white border-b border-gray-200 px-4 py-3 flex items-center justify-between sticky top-0 z-10">
-        <span className="text-lg font-bold text-blue-700">🔗 TraceChain</span>
-        <div className="flex items-center gap-3">
-          <span className="text-sm text-gray-600 hidden sm:block">
-            {actor?.name}
-            <span className="text-gray-400 ml-1">· {actor ? ROLE_LABELS[actor.role] : ''}</span>
-          </span>
-          <button
-            onClick={logout}
-            className="text-sm text-red-500 hover:text-red-700 transition-colors"
-          >
-            Đăng xuất
-          </button>
-        </div>
-      </header>
+    <div className="page-shell">
+      <main className="max-w-5xl mx-auto p-4 sm:p-6">
+        <PageHeader
+          title={
+            <span className="inline-flex items-center gap-2">
+              Chào {actor?.name?.split(' ').pop() ?? ''}
+              <Hand className="w-5 h-5 text-amber-500" />
+            </span>
+          }
+          subtitle="Tổng quan toàn bộ lô hàng đang lưu thông trong chuỗi cung ứng của bạn."
+          action={
+            <button onClick={() => navigate('/record')} className={buttonClass('primary', 'md')}>
+              + Ghi sự kiện
+            </button>
+          }
+        />
 
-      <main className="max-w-4xl mx-auto p-4">
+        {/* Stats bar */}
+        <div className="grid grid-cols-3 gap-3 my-5">
+          <StatCard icon={<Package className="w-5 h-5" />} tone="neutral" label="Tổng lô hàng" value={overview?.totalBatches ?? total} />
+          <StatCard icon={<Activity className="w-5 h-5" />} tone="success" label="Đang hoạt động" value={overview?.activeBatches ?? '–'} />
+          <StatCard icon={<Siren className="w-5 h-5" />} tone="danger" label="Đã thu hồi" value={overview?.recalledBatches ?? '–'} />
+        </div>
+
         {/* Actions row */}
         <div className="flex items-center gap-3 mb-5">
           <input
             type="text"
             placeholder="Tìm theo tên sản phẩm, xuất xứ, ID..."
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            className="flex-1 border border-gray-300 rounded-lg px-3 py-2 text-sm
-                       focus:outline-none focus:ring-2 focus:ring-blue-500"
+            value={searchInput}
+            onChange={(e) => setSearchInput(e.target.value)}
+            className={`flex-1 ${inputClass}`}
           />
-          <button
-            onClick={() => navigate('/record')}
-            className="bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium
-                       px-4 py-2 rounded-lg transition-colors whitespace-nowrap"
-          >
-            + Ghi sự kiện
-          </button>
-        </div>
-
-        {/* Stats bar */}
-        <div className="grid grid-cols-3 gap-3 mb-5">
-          <div className="bg-white rounded-xl border border-gray-200 p-3 text-center">
-            <p className="text-2xl font-bold text-gray-900">{batches.length}</p>
-            <p className="text-xs text-gray-500 mt-0.5">Tổng lô hàng</p>
-          </div>
-          <div className="bg-white rounded-xl border border-gray-200 p-3 text-center">
-            <p className="text-2xl font-bold text-green-600">
-              {batches.filter((b) => !b.isRecalled).length}
-            </p>
-            <p className="text-xs text-gray-500 mt-0.5">Đang hoạt động</p>
-          </div>
-          <div className="bg-white rounded-xl border border-gray-200 p-3 text-center">
-            <p className="text-2xl font-bold text-red-500">
-              {batches.filter((b) => b.isRecalled).length}
-            </p>
-            <p className="text-xs text-gray-500 mt-0.5">Đã thu hồi</p>
+          <div className="flex rounded-xl overflow-hidden border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 flex-shrink-0">
+            <button
+              type="button"
+              onClick={() => setView('list')}
+              className={`text-sm px-3.5 py-2.5 transition-colors ${view === 'list' ? 'bg-brand-600 text-white' : 'text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700'}`}
+            >
+              Danh sách
+            </button>
+            <button
+              type="button"
+              onClick={() => setView('kanban')}
+              className={`text-sm px-3.5 py-2.5 transition-colors ${view === 'kanban' ? 'bg-brand-600 text-white' : 'text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700'}`}
+            >
+              Kanban
+            </button>
           </div>
         </div>
 
-        {actor?.role === 'ADMIN' && <StageChart />}
-
-        {/* Batch list */}
-        {loading && <p className="text-center text-gray-400 py-16 text-sm">Đang tải...</p>}
-        {error && <p className="text-center text-red-500 py-16 text-sm">{error}</p>}
-
-        {!loading && !error && filtered.length === 0 && (
-          <p className="text-center text-gray-400 py-16 text-sm">
-            {search ? 'Không tìm thấy lô hàng phù hợp' : 'Chưa có lô hàng nào'}
-          </p>
+        {actor?.role === 'ADMIN' && view === 'list' && (
+          <Suspense fallback={null}>
+            <StageChart />
+          </Suspense>
         )}
 
-        <div className="space-y-2">
-          {filtered.map((b) => (
-            <Link
-              key={b.id}
-              to={`/batch/${b.id}`}
-              className="bg-white rounded-xl border border-gray-200 p-4
-                         hover:shadow-md hover:border-blue-200 transition-all flex items-center justify-between"
-            >
-              <div className="min-w-0 flex-1">
-                <div className="flex items-center gap-2 flex-wrap">
-                  <span className="font-semibold text-gray-900 truncate">{b.productName}</span>
-                  {b.isRecalled && (
-                    <span className="text-xs bg-red-100 text-red-600 px-2 py-0.5 rounded-full flex-shrink-0">
-                      Thu hồi
-                    </span>
-                  )}
+        {view === 'kanban' ? (
+          <KanbanBoard />
+        ) : (
+          <>
+            {loading && <SkeletonCardList rows={5} />}
+            {error && <p className="text-center text-rose-500 dark:text-rose-400 py-16 text-sm">{error}</p>}
+
+            {!loading && !error && batches.length === 0 && (
+              <EmptyState
+                icon={<Package className="w-6 h-6" />}
+                title={search ? 'Không tìm thấy lô hàng phù hợp' : 'Chưa có lô hàng nào'}
+                description={search ? 'Thử một từ khoá khác.' : 'Bắt đầu bằng cách ghi sự kiện đầu tiên cho một lô hàng.'}
+              />
+            )}
+
+            <div className="space-y-2">
+              {batches.map((b, i) => (
+                <div key={b.id} className="animate-slide-up" style={{ animationDelay: `${Math.min(i, 8) * 40}ms` }}>
+                  <BatchCard batch={b} />
                 </div>
-                <p className="text-sm text-gray-500 mt-0.5 truncate">
-                  {b.productType} · {b.origin} · {b.quantity} {b.unit}
-                </p>
-                <p className="text-xs text-gray-300 mt-0.5 font-mono">{b.id.slice(0, 8)}…</p>
-              </div>
-              <div className="ml-4 flex flex-col items-end gap-1 flex-shrink-0">
-                <StagePill stage={b.currentStage} />
-                <span className="text-xs text-gray-400">
-                  {new Date(b.createdAt).toLocaleDateString('vi-VN')}
+              ))}
+            </div>
+
+            {!loading && !error && total > 0 && (
+              <div className="flex items-center justify-center gap-3 mt-5">
+                <button
+                  type="button"
+                  disabled={page <= 1}
+                  onClick={() => setPage((p) => Math.max(1, p - 1))}
+                  className="text-sm px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-300
+                             disabled:opacity-40 hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors"
+                >
+                  ← Trước
+                </button>
+                <span className="text-xs text-slate-400 dark:text-slate-500">
+                  Trang {page} / {totalPages} · {total} lô hàng
                 </span>
+                <button
+                  type="button"
+                  disabled={page >= totalPages}
+                  onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                  className="text-sm px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-300
+                             disabled:opacity-40 hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors"
+                >
+                  Sau →
+                </button>
               </div>
-            </Link>
-          ))}
-        </div>
+            )}
+          </>
+        )}
       </main>
     </div>
   )

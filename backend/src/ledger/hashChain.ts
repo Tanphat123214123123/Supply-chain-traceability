@@ -1,4 +1,4 @@
-import { createHash } from 'crypto';
+import { createHmac } from 'crypto';
 import { TraceEvent } from '../domain/types';
 
 export const GENESIS_HASH = '0'.repeat(64);
@@ -23,36 +23,58 @@ function canonicalPayload(event: UnhashedEvent): string {
   });
 }
 
-export function computeEventHash(event: UnhashedEvent): string {
-  return createHash('sha256').update(canonicalPayload(event)).digest('hex');
+/**
+ * HMAC-keyed rather than a plain hash: recomputing a valid hash for a tampered
+ * row requires knowing `signingKey`, which lives only in server config/env —
+ * never in the database itself. A plain SHA-256 would let anyone with direct
+ * DB write access (leaked credentials, insider, SQLi elsewhere) edit a row and
+ * transparently recompute all downstream hashes so `verifyChain` still passes.
+ */
+export function computeEventHash(event: UnhashedEvent, signingKey: string): string {
+  return createHmac('sha256', signingKey).update(canonicalPayload(event)).digest('hex');
 }
 
-/**
- * Verifies that a batch's event chain is intact: hashes recompute correctly
- * and each event's prevHash links to the previous event's hash.
- * Events must be passed sorted by sequenceNumber ascending.
- */
-export function verifyChain(events: TraceEvent[]): boolean {
+export function verifyChain(events: TraceEvent[], signingKey: string): boolean {
+  return verifyChainDetailed(events, signingKey).valid;
+}
+
+export interface ChainVerification {
+  valid: boolean;
+  /** Index (within the given event array) of the first event that fails verification, if any. */
+  brokenAtIndex?: number;
+  perEvent: Array<{ eventId: string; recomputedHash: string; matchesStoredHash: boolean; linksToPrevious: boolean }>;
+}
+
+/** Same check as `verifyChain`, but reports exactly which event (if any) breaks the chain — for audit/verifier tooling. */
+export function verifyChainDetailed(events: TraceEvent[], signingKey: string): ChainVerification {
   let expectedPrevHash = GENESIS_HASH;
+  let brokenAtIndex: number | undefined;
+  const perEvent: ChainVerification['perEvent'] = [];
 
-  for (const event of events) {
-    if (event.prevHash !== expectedPrevHash) return false;
+  events.forEach((event, index) => {
+    const linksToPrevious = event.prevHash === expectedPrevHash;
+    const recomputedHash = computeEventHash(
+      {
+        batchId: event.batchId,
+        stage: event.stage,
+        actorId: event.actorId,
+        timestamp: event.timestamp,
+        location: event.location,
+        notes: event.notes,
+        data: event.data,
+        prevHash: event.prevHash,
+        sequenceNumber: event.sequenceNumber,
+      },
+      signingKey,
+    );
+    const matchesStoredHash = recomputedHash === event.hash;
 
-    const recomputed = computeEventHash({
-      batchId: event.batchId,
-      stage: event.stage,
-      actorId: event.actorId,
-      timestamp: event.timestamp,
-      location: event.location,
-      notes: event.notes,
-      data: event.data,
-      prevHash: event.prevHash,
-      sequenceNumber: event.sequenceNumber,
-    });
-    if (recomputed !== event.hash) return false;
-
+    if (brokenAtIndex === undefined && (!linksToPrevious || !matchesStoredHash)) {
+      brokenAtIndex = index;
+    }
+    perEvent.push({ eventId: event.id, recomputedHash, matchesStoredHash, linksToPrevious });
     expectedPrevHash = event.hash;
-  }
+  });
 
-  return true;
+  return { valid: brokenAtIndex === undefined, brokenAtIndex, perEvent };
 }

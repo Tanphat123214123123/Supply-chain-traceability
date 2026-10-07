@@ -3,134 +3,139 @@
 ## Tổng quan luồng màn hình
 
 ```
-/login          ← Tất cả người dùng
+/register        ← Tạo không gian mới (thành quản trị viên) hoặc nhập mã mời
+/login           ← Tất cả người dùng
     ↓ Đăng nhập thành công
-/               ← Dashboard (danh sách lô hàng, filtered theo role)
-    ├── /batch/:id        ← Chi tiết + timeline lô hàng
-    ├── /record           ← Ghi sự kiện (khâu tương ứng role)
-    └── /provenance/:id   ← Công khai, không cần đăng nhập (QR scan)
+/dashboard       ← Việc đang chờ bạn · Cần chú ý · Tất cả lô hàng
+    ├── /tasks            ← Việc cần làm (hộp việc — lối vào duy nhất để xử lý lô)
+    │     └── /record?batchId=…  ← Xử lý lô: form đúng khâu tiếp theo
+    ├── /batches/new      ← Tạo lô + ghi thu hoạch (Nông dân, Quản trị viên)
+    ├── /batch/:id        ← Chi tiết, tiến độ, timeline, xuất báo cáo, thu hồi
+    └── /actors           ← Đối tác; Quản trị viên mời thành viên tại đây
+/provenance/:id  ← Công khai, không cần đăng nhập (QR)
+/verify?batch=…  ← Tự kiểm chứng chuỗi băm
 ```
 
 ---
 
-## 1. Màn hình Đăng nhập `/login`
+## 1. Đăng ký `/register`
 
-**Tất cả vai trò**
+Không ai tự chọn vai trò.
 
-| Element        | Chi tiết                                              |
-|----------------|-------------------------------------------------------|
-| Logo + tên     | 🔗 TraceChain, subtitle "Hệ thống truy xuất nguồn gốc" |
-| Form           | Email, Password, nút "Đăng nhập"                     |
-| Error          | Inline message dưới form nếu sai thông tin           |
-| Demo hints     | Hiển thị 6 email demo và mật khẩu chung              |
-| Redirect       | Sau login → `/` (Dashboard)                          |
+| Tab                  | Chi tiết |
+|----------------------|----------|
+| Tôi có mã mời        | Nhập mã (hoặc mở link `/register?invite=MÃ`) → hiển thị "Bạn được mời vào *X* với vai trò *Y*" → họ tên, đơn vị, email (khoá nếu lời mời gắn email), mật khẩu |
+| Tạo không gian mới   | Tên không gian, mã không gian (tự sinh từ tên), họ tên, đơn vị, email, mật khẩu → trở thành Quản trị viên, chuyển tới `/actors` để mời đối tác |
 
----
+Đăng ký xong tự đăng nhập.
 
-## 2. Dashboard `/`
+## 2. Đăng nhập `/login`
 
-**Tất cả vai trò (đã đăng nhập)**
-
-| Element           | Chi tiết                                                  |
-|-------------------|-----------------------------------------------------------|
-| Topbar            | Logo, tên người dùng + vai trò, nút Đăng xuất            |
-| Search bar        | Tìm theo tên sản phẩm, xuất xứ, hoặc ID                  |
-| Stats bar         | Tổng lô hàng · Đang hoạt động · Đã thu hồi               |
-| Nút "+ Ghi sự kiện" | Dẫn đến `/record`                                      |
-| Batch list        | Card mỗi lô: tên, loại, xuất xứ, số lượng, khâu hiện tại, ngày tạo |
-| Recalled badge    | Thẻ đỏ "Thu hồi" trên lô đã bị thu hồi                  |
-| Click vào lô      | Dẫn đến `/batch/:id`                                     |
-
-**Lưu ý theo vai trò:**
-- FARMER: thấy lô do mình tạo + tất cả lô
-- ADMIN: thấy thêm nút "Thu hồi" trực tiếp từ danh sách
+| Element    | Chi tiết |
+|------------|----------|
+| Form       | Email, mật khẩu |
+| Lỗi        | Thông báo tiếng Việt ngay dưới form |
+| Demo hints | Chỉ ở môi trường dev |
 
 ---
 
-## 3. Chi tiết Lô hàng `/batch/:id`
+## 3. Tổng quan `/dashboard`
 
-**Tất cả vai trò (đã đăng nhập)**
-
-| Element          | Chi tiết                                                   |
-|------------------|------------------------------------------------------------|
-| Header           | Tên sản phẩm, nút quay lại, VerifyBadge                   |
-| Thông tin lô     | Loại, xuất xứ, số lượng, khâu hiện tại, ngày tạo, ID     |
-| Recall banner    | Hiển thị nếu lô đã bị thu hồi, kèm lý do                 |
-| Anomaly warnings | Danh sách cảnh báo bất thường (severity badge)            |
-| Direction toggle | Thuận chiều ↓ / Ngược chiều ↑                             |
-| Timeline         | Các sự kiện theo thứ tự, mỗi sự kiện có: khâu, địa điểm, thời gian, hash info |
-| Nút ghi event    | "+ Ghi sự kiện mới" dẫn đến `/record?batchId=...`        |
-| Public QR link   | URL `/provenance/:id` để chia sẻ cho người tiêu dùng     |
-
-**Theo vai trò:**
-- ADMIN: thêm nút "Thu hồi lô hàng" (mở modal nhập lý do)
-- Tất cả: thấy đầy đủ hash chain, anomaly warnings
+| Element                 | Chi tiết |
+|-------------------------|----------|
+| Nút chính               | Nông dân/Quản trị viên: "+ Lô hàng mới". Vai trò khác: "Việc cần làm (n)" |
+| Đang chờ bạn xử lý      | Tối đa 3 lô kế tiếp của bạn, bấm vào là tới form xử lý (không hiện cho Quản trị viên) |
+| Cần chú ý               | Quản trị viên + Kiểm định viên: lô đứng yên ≥ 3 ngày, số cảnh báo chưa xử lý |
+| Thẻ số liệu             | Đang lưu thông · Chờ quá 3 ngày · Cảnh báo chưa xử lý · Đã thu hồi |
+| Tất cả lô hàng          | Tìm kiếm + lọc theo khâu gần nhất; xem dạng danh sách hoặc theo khâu (mỗi cột tải tối đa 8 lô, có "Xem thêm") |
+| Dòng lô hàng            | Tên, xuất xứ, số lượng, "Cập nhật … trước", trạng thái "Chờ <khâu>" (vàng nếu chờ ≥ 3 ngày) |
 
 ---
 
-## 4. Ghi Sự Kiện `/record`
+## 4. Việc cần làm `/tasks`
 
-**Tất cả vai trò (đã đăng nhập)**
-
-| Element         | Chi tiết                                                    |
-|-----------------|-------------------------------------------------------------|
-| Header          | Tiêu đề, nút quay lại                                      |
-| Info banner     | Hiển thị tên người dùng + các khâu được phép theo role     |
-| Select lô hàng  | Dropdown các lô chưa bị thu hồi                            |
-| Select khâu     | Chỉ hiển thị khâu role được phép                           |
-| Địa điểm        | Text input, bắt buộc                                       |
-| Ghi chú         | Textarea, tuỳ chọn                                         |
-| Error display   | Inline nếu backend từ chối (anomaly, unauthorized...)      |
-| Redirect        | Sau ghi thành công → `/batch/:id`                         |
-
-**Theo vai trò (khâu có sẵn):**
-
-| Role         | Khâu có trong dropdown                    |
-|--------------|-------------------------------------------|
-| FARMER       | Thu hoạch                                 |
-| PROCESSOR    | Chế biến, Đóng gói                        |
-| INSPECTOR    | Kiểm định chất lượng                      |
-| DISTRIBUTOR  | Phân phối                                 |
-| RETAILER     | Bán lẻ                                    |
-| ADMIN        | Tất cả 6 khâu                             |
+Các lô đã được bàn giao cho bạn, chờ lâu nhất lên đầu. Mỗi dòng: icon khâu, sản phẩm, đơn vị tạo lô, "Chờ từ …", nút tên khâu → `/record?batchId=…`. Số lượng hiện ở badge trên menu.
 
 ---
 
-## 5. Trang Nguồn Gốc Công Khai `/provenance/:batchId`
+## 5. Xử lý lô `/record?batchId=…`
 
-**Không cần đăng nhập — dành cho người tiêu dùng quét QR**
+| Element            | Chi tiết |
+|--------------------|----------|
+| Thẻ lô             | Sản phẩm, số lượng, "khâu hiện tại → khâu tiếp theo" |
+| Khâu               | Tự xác định (khâu kế tiếp). Quản trị viên có thể chọn khâu khác để bổ sung dữ liệu, kèm cảnh báo |
+| Trường theo khâu   | Xem bảng dưới; trường có icon 🌐 sẽ hiện trên trang công khai |
+| Địa điểm           | Tự điền: vùng trồng (thu hoạch) hoặc nơi bạn ghi lần trước cho khâu này |
+| Ghi chú            | Chỉ nội bộ |
+| Bàn giao cho       | Chỉ người có vai trò làm khâu sau; tự chọn nếu chỉ có một người |
+| Không được phép    | Nếu lô không phải của bạn / đã thu hồi / đã hoàn tất: giải thích lý do thay vì form |
+| Kiểm định "Không đạt" | Sau khi ghi, mở ngay hộp thoại thu hồi |
 
-| Element           | Chi tiết                                                   |
-|-------------------|------------------------------------------------------------|
-| Header icon       | ✅ hoặc 🚨 tùy trạng thái                                 |
-| Tên sản phẩm      | To, rõ ràng                                               |
-| Chain valid badge | Xanh "Dữ liệu hợp lệ" hoặc đỏ "Có dấu hiệu bất thường"  |
-| Recall banner     | Đỏ nổi bật nếu đã thu hồi + lý do                        |
-| Thông tin sản phẩm| Xuất xứ, khâu hiện tại, số khâu đã hoàn thành            |
-| Hành trình        | Danh sách 6 khâu: tick xanh (đã qua), số xám (chưa), highlight khâu hiện tại |
-| Footer            | Batch ID + "Powered by TraceChain"                        |
+| Khâu                | Trường |
+|---------------------|--------|
+| Thu hoạch           | Ngày thu hoạch*, giống, tiêu chuẩn canh tác |
+| Chế biến            | Phương pháp*, sản lượng sau chế biến, độ ẩm |
+| Kiểm định chất lượng| Kết quả (Đạt/Không đạt)*, phân hạng, độ ẩm, số phiếu |
+| Đóng gói            | Quy cách*, số kiện*, hạn sử dụng |
+| Phân phối           | Nơi nhận*, phương tiện, nhiệt độ |
+| Bán lẻ              | Cửa hàng*, ngày lên kệ |
 
-**Thiết kế mobile-first** — người dùng chủ yếu xem trên điện thoại sau khi quét QR.
+Định nghĩa nằm ở `frontend/src/domain/stageFields.ts`; danh sách trường công khai được backend kiểm soát (`PUBLIC_EVENT_FIELDS`).
+
+## 6. Lô hàng mới `/batches/new`
+
+Nông dân, Quản trị viên. Một form: tên sản phẩm, loại (danh sách cố định), số lượng + đơn vị, vùng trồng (dùng làm xuất xứ và địa điểm thu hoạch), các trường thu hoạch, bàn giao cho nhà chế biến.
 
 ---
 
-## 6. Component dùng lại
+## 7. Chi tiết lô `/batch/:id`
 
-### Timeline
-- Dòng thời gian dọc với icon khâu
-- Mỗi node: tên khâu, địa điểm, thời gian, hash rút gọn
-- Dùng ở: BatchDetail
+| Element            | Chi tiết |
+|--------------------|----------|
+| Header             | Tên, VerifyBadge |
+| Trạng thái         | Loại · xuất xứ · số lượng, thanh tiến độ 6 khâu, "Đang chờ <đơn vị> · từ …", nút "Xử lý: <khâu>" nếu đến lượt bạn |
+| Cảnh báo           | Chỉ cảnh báo chưa xử lý |
+| Xuất báo cáo       | Menu: Word .docx (Times New Roman 13, lề theo Nghị định 30/2020), Excel .xlsx (ô ngày/số đúng kiểu, cố định tiêu đề, bộ lọc). Cùng một nội dung, sinh từ `lib/reports/model.ts` |
+| Timeline           | Mỗi khâu: đơn vị · người thực hiện, địa điểm, thông tin khâu, ghi chú; hash trong "Chi tiết kỹ thuật" |
+| Tem truy xuất      | QR, sao chép link, mở trang công khai |
+| Thu hồi            | Quản trị viên, Kiểm định viên: hộp thoại có lý do theo danh mục, chi tiết, xác nhận không thể hoàn tác |
 
-### EventForm
-- Form ghi sự kiện cấu hình theo role
-- Props: `role`, `onSubmit`, `disabled`
-- Dùng ở: RecordEvent, có thể nhúng vào BatchDetail
+---
 
-### VerifyBadge
-- 3 trạng thái: "Đã xác thực" (xanh), "Có bất thường" (vàng), "Chuỗi bị can thiệp" (đỏ)
-- Dùng ở: BatchDetail header, Provenance
+## 8. Trang công khai `/provenance/:batchId`
 
-### QRScanner
-- Sử dụng BarcodeDetector API (Chrome/Android)
-- Fallback manual input nếu không hỗ trợ
-- Dùng ở: trang tìm kiếm, có thể thêm vào Provenance
+Mobile-first, không cần đăng nhập.
+
+| Element     | Chi tiết |
+|-------------|----------|
+| Trạng thái  | "Đã đến cửa hàng" / "Đang vận chuyển…" / "Đã thu hồi" |
+| Thu hồi     | Banner đỏ, lý do, hướng dẫn "không sử dụng, mang trả nơi mua" |
+| Hành trình  | Mỗi khâu: ngày, **đơn vị** (không lộ tên người), địa điểm, thông tin công khai |
+| Toàn vẹn    | "Hồ sơ nguyên vẹn — chưa bị sửa hoặc xoá kể từ khi ghi; không thay thế kiểm định độc lập", link tự kiểm chứng |
+
+---
+
+## 9. Báo cáo `/reports`
+
+Xuất danh sách lô hàng ra Excel .xlsx theo khoảng ngày (tính trọn ngày theo giờ địa phương) và xuất xứ; sheet "Thông tin xuất" ghi lại bộ lọc đã dùng.
+
+---
+
+## 10. Đối tác `/actors`
+
+Tất cả: danh sách tổ chức và tài khoản. Quản trị viên: mời thành viên (vai trò, hiệu lực, email tuỳ chọn, ghi chú) → mã hiển thị một lần + link đăng ký; danh sách lời mời (đang chờ / đã dùng / hết hạn / đã huỷ), huỷ lời mời; khoá/mở khoá tài khoản.
+
+---
+
+## 11. Component dùng lại
+
+| Component          | Dùng ở |
+|--------------------|--------|
+| `StageFieldsInput` | Form xử lý lô, lô mới |
+| `HandoffSelect`    | Form xử lý lô, lô mới |
+| `Timeline`         | Chi tiết lô |
+| `RecallDialog` + `ui/Modal` | Chi tiết lô |
+| `BatchRow`         | Tổng quan |
+| `InvitePanel`      | Đối tác (Quản trị viên) |
+| `VerifyBadge`      | Chi tiết lô — "Dữ liệu nguyên vẹn" / "Có bất thường" / "Chuỗi bị can thiệp" |
+| `QRScanner`        | `/scan` |

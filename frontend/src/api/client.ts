@@ -199,6 +199,11 @@ export interface Batch {
   metadata: Record<string, unknown>
   /** Who's currently authorized to record the batch's next event — undefined means unclaimed. */
   assignedToActorId?: string
+  /** Head of the batch's hash chain as recorded by the database (last event hash / event count). */
+  headHash: string
+  eventCount: number
+  /** Timestamp of the most recent event — absent while nothing has been recorded. */
+  lastEventAt?: string
 }
 
 export interface TraceEvent {
@@ -213,11 +218,29 @@ export interface TraceEvent {
   hash: string
   prevHash: string
   sequenceNumber: number
+  /** 1 = legacy HMAC (server-verifiable only), 2 = public salted SHA-256 over RFC 8785 JSON. */
+  hashVersion: 1 | 2
+  /** Per-event random salt — part of the v2 hash preimage, absent on v1 events. */
+  salt?: string
 }
 
 export type AnomalyType = 'STAGE_SKIPPED' | 'DUPLICATE_STAGE' | 'OUT_OF_ORDER' | 'CHAIN_TAMPERED'
 
 export type AnomalySeverity = 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL'
+
+export const ANOMALY_TYPE_LABELS: Record<AnomalyType, string> = {
+  STAGE_SKIPPED: 'Bỏ qua khâu',
+  DUPLICATE_STAGE: 'Ghi trùng khâu',
+  OUT_OF_ORDER: 'Sai thứ tự',
+  CHAIN_TAMPERED: 'Dữ liệu bị can thiệp',
+}
+
+export const SEVERITY_LABELS: Record<AnomalySeverity, string> = {
+  CRITICAL: 'Nghiêm trọng',
+  HIGH: 'Cao',
+  MEDIUM: 'Trung bình',
+  LOW: 'Thấp',
+}
 
 export interface Anomaly {
   id: string
@@ -239,12 +262,54 @@ export interface TraceResult {
   isValid: boolean
 }
 
+export interface PublicJourneyStep {
+  stage: SupplyChainStage
+  timestamp: string
+  location: string
+  /** The organization that recorded the step — never a person's name. */
+  organization: string
+  /** Only the publishable facts of the step (see backend PUBLIC_EVENT_FIELDS). */
+  details: Record<string, string | number | boolean>
+}
+
 export interface PublicTrace {
   batch: Pick<Batch, 'id' | 'productName' | 'productType' | 'origin' | 'currentStage' | 'isRecalled' | 'recallReason'>
   stageCount: number
   isValid: boolean
+  /** Unresolved anomalies only. */
   hasAnomalies: boolean
+  journey: PublicJourneyStep[]
 }
+
+export interface AttentionSummary {
+  stalledBatches: Batch[]
+  stalledCount: number
+  openAnomalyCount: number
+}
+
+export interface Invitation {
+  id: string
+  role: ActorRole
+  email?: string
+  note?: string
+  createdBy: string
+  createdAt: string
+  expiresAt: string
+  usedAt?: string
+  usedBy?: string
+  revokedAt?: string
+}
+
+export interface InvitationPreview {
+  tenantName: string
+  role: ActorRole
+  email?: string
+  expiresAt: string
+}
+
+export type RegisterBody =
+  | { mode: 'workspace'; name: string; email: string; password: string; organization: string; tenantSlug: string; tenantName: string }
+  | { mode: 'invite'; name: string; email: string; password: string; organization: string; inviteCode: string }
 
 export interface StatsOverview {
   totalBatches: number
@@ -252,6 +317,7 @@ export interface StatsOverview {
   recalledBatches: number
   totalEvents: number
   anomalyCount: number
+  openAnomalyCount: number
 }
 
 export interface StatsByStage {
@@ -296,10 +362,25 @@ export interface NotificationItem {
   createdAt: string
 }
 
+export type ChainProblem = 'TAMPERED_EVENT' | 'BROKEN_LINK' | 'HEAD_MISMATCH' | 'UNVERIFIABLE_LEGACY'
+
 export interface ChainVerification {
   valid: boolean
   brokenAtIndex?: number
-  perEvent: Array<{ eventId: string; recomputedHash: string; matchesStoredHash: boolean; linksToPrevious: boolean }>
+  problem?: ChainProblem
+  /** Whether the chain ends exactly at the head the database recorded (catches a deleted tail). */
+  headMatches: boolean | null
+  legacyEventCount: number
+  perEvent: Array<{
+    eventId: string
+    sequenceNumber: number
+    hashVersion: 1 | 2
+    /** null when the server can't recompute it (legacy v1 event without its key). */
+    recomputedHash: string | null
+    matchesStoredHash: boolean
+    linksToPrevious: boolean
+    publiclyVerifiable: boolean
+  }>
 }
 
 export interface FullVerifyResult extends ChainVerification {
@@ -330,15 +411,10 @@ export const authApi = {
   login: (email: string, password: string) =>
     client.post<{ token: string; actor: Actor }>('/auth/login', { email, password }).then((r) => r.data),
 
-  register: (body: {
-    name: string
-    email: string
-    password: string
-    role: ActorRole
-    organization: string
-    tenantSlug: string
-    tenantName?: string
-  }) => client.post<Actor>('/auth/register', body).then((r) => r.data),
+  register: (body: RegisterBody) => client.post<Actor>('/auth/register', body).then((r) => r.data),
+
+  previewInvitation: (code: string) =>
+    client.get<InvitationPreview>(`/auth/invitations/${encodeURIComponent(code.trim())}`).then((r) => r.data),
 
   // Relies on the httpOnly refreshToken cookie the backend set at login —
   // used both for the on-401 silent refresh and for restoring a session on
@@ -362,7 +438,7 @@ export const authApi = {
 }
 
 export const batchApi = {
-  list: (params?: { page?: number; pageSize?: number; search?: string }) =>
+  list: (params?: { page?: number; pageSize?: number; search?: string; stage?: SupplyChainStage | 'NONE' }) =>
     client.get<PaginatedResult<Batch>>('/batches', { params }).then((r) => r.data),
   get: (id: string) => client.get<Batch>(`/batches/${id}`).then((r) => r.data),
   create: (body: {
@@ -378,10 +454,9 @@ export const batchApi = {
   qrSvg: (id: string) =>
     client.get<string>(`/batches/${id}/qr`, { responseType: 'text' as const }).then((r) => r.data),
   pending: () => client.get<Batch[]>('/batches/pending').then((r) => r.data),
-  exportCsv: (params: { from?: string; to?: string; origin?: string }) =>
-    client
-      .get<string>('/batches/export', { params: { ...params, format: 'csv' }, responseType: 'text' as const })
-      .then((r) => r.data),
+  /** Batches for a report; `from`/`to` are ISO instants (the caller decides what "a day" means). */
+  exportJson: (params: { from?: string; to?: string; origin?: string }) =>
+    client.get<Batch[]>('/batches/export', { params: { ...params, format: 'json' } }).then((r) => r.data),
 }
 
 export const eventApi = {
@@ -397,10 +472,8 @@ export const eventApi = {
 }
 
 export const traceApi = {
-  forward: (batchId: string) =>
+  get: (batchId: string) =>
     client.get<TraceResult>(`/trace/${batchId}`).then((r) => r.data),
-  backward: (batchId: string) =>
-    client.get<TraceResult>(`/trace/${batchId}?direction=backward`).then((r) => r.data),
   public: (batchId: string) =>
     client.get<PublicTrace>(`/trace/public/${batchId}`).then((r) => r.data),
   verifyFull: (batchId: string) =>
@@ -412,6 +485,7 @@ export const statsApi = {
   byStage: () => client.get<StatsByStage[]>('/stats/by-stage').then((r) => r.data),
   byDay: () => client.get<StatsByDay[]>('/stats/by-day').then((r) => r.data),
   byOrigin: () => client.get<StatsByOrigin[]>('/stats/by-origin').then((r) => r.data),
+  attention: () => client.get<AttentionSummary>('/stats/attention').then((r) => r.data),
 }
 
 export const adminApi = {
@@ -421,6 +495,10 @@ export const adminApi = {
     client.get<PaginatedResult<Anomaly>>('/admin/anomalies', { params }).then((r) => r.data),
   resolveAnomaly: (id: string) =>
     client.patch<Anomaly>(`/admin/anomalies/${id}/resolve`).then((r) => r.data),
+  invitations: () => client.get<Invitation[]>('/admin/invitations').then((r) => r.data),
+  createInvitation: (body: { role: ActorRole; email?: string; note?: string; expiresInDays?: number }) =>
+    client.post<{ invitation: Invitation; code: string }>('/admin/invitations', body).then((r) => r.data),
+  revokeInvitation: (id: string) => client.delete<Invitation>(`/admin/invitations/${id}`).then((r) => r.data),
 }
 
 export const actorsApi = {

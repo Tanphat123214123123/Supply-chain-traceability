@@ -23,7 +23,7 @@ TraceChain là hệ thống truy xuất nguồn gốc sản phẩm trong chuỗi
                                        │   SHA-256 per event  │
                                        ├──────────────────────┤
                                        │   Repository Layer   │
-                                       │   In-Memory / PgSQL  │
+                                       │  PostgreSQL 16 (RLS) │
                                        └──────────────────────┘
 ```
 
@@ -65,27 +65,42 @@ Bất kỳ sửa đổi nào vào dữ liệu sẽ phá vỡ chuỗi và bị ph
 | Method | Endpoint           | Mô tả                    |
 |--------|--------------------|--------------------------|
 | POST   | /api/auth/login    | Đăng nhập, nhận JWT      |
-| POST   | /api/auth/register | Đăng ký tài khoản mới    |
+| POST   | /api/auth/register | Đăng ký: `mode: "workspace"` (tạo không gian mới, thành quản trị viên) hoặc `mode: "invite"` (dùng mã mời, vai trò theo lời mời) |
+| GET    | /api/auth/invitations/:code | Xem trước lời mời (tên không gian, vai trò) — công khai |
+
+### Admin — lời mời
+| Method | Endpoint                    | Mô tả                                        |
+|--------|-----------------------------|----------------------------------------------|
+| GET    | /api/admin/invitations      | Lời mời gần đây                              |
+| POST   | /api/admin/invitations      | Tạo mã mời (`role`, `email?`, `expiresInDays`) — mã chỉ trả về một lần |
+| DELETE | /api/admin/invitations/:id  | Huỷ lời mời chưa dùng                        |
 
 ### Batches
 | Method | Endpoint                  | Mô tả               |
 |--------|---------------------------|---------------------|
 | POST   | /api/batches              | Tạo lô hàng mới     |
-| GET    | /api/batches              | Danh sách lô hàng   |
+| GET    | /api/batches              | Danh sách lô hàng (`search`, `stage` = khâu hoặc `NONE`) |
+| GET    | /api/batches/pending      | Lô đang chờ chính người gọi xử lý |
 | GET    | /api/batches/:id          | Chi tiết lô hàng    |
 | POST   | /api/batches/:id/recall   | Thu hồi lô hàng     |
 
 ### Events
 | Method | Endpoint     | Mô tả                        |
 |--------|--------------|------------------------------|
-| POST   | /api/events  | Ghi sự kiện chuỗi cung ứng   |
+| POST   | /api/events  | Ghi sự kiện chuỗi cung ứng; `data` chứa thông tin riêng của khâu (phẳng, tối đa 30 trường) |
+
+### Stats
+| Method | Endpoint              | Mô tả                                              |
+|--------|-----------------------|----------------------------------------------------|
+| GET    | /api/stats/overview   | Tổng quan (gồm `openAnomalyCount`)                 |
+| GET    | /api/stats/attention  | Lô đứng yên từ 3 ngày + số cảnh báo chưa xử lý     |
 
 ### Trace
 | Method | Endpoint                      | Mô tả                          |
 |--------|-------------------------------|--------------------------------|
 | GET    | /api/trace/:batchId           | Truy xuất (có auth)            |
 | GET    | /api/trace/:batchId?direction=backward | Truy xuất ngược chiều |
-| GET    | /api/trace/public/:batchId    | Truy xuất công khai (QR scan)  |
+| GET    | /api/trace/public/:batchId    | Truy xuất công khai (QR scan): hành trình theo đơn vị, chỉ các trường được phép công khai |
 
 ---
 
@@ -110,7 +125,7 @@ Mức CRITICAL và HIGH **chặn** hành động. MEDIUM và LOW chỉ **cảnh 
 | Backend   | Node.js 20, TypeScript 5, Express 4          |
 | Crypto    | Node.js `crypto` (SHA-256 built-in)          |
 | Auth      | JWT (`jsonwebtoken`), bcrypt (`bcryptjs`)    |
-| DB        | In-Memory (demo) → PostgreSQL 16 (production)|
+| DB        | PostgreSQL 16 — xem [DATABASE.md](DATABASE.md) |
 | Frontend  | React 18, Vite 5, Tailwind CSS 3             |
 | Router    | React Router v6                              |
 | HTTP      | Axios                                        |

@@ -11,9 +11,11 @@ function makeEvent(stage: SupplyChainStage, overrides: Partial<TraceEvent> = {})
     timestamp: new Date(),
     location: 'Somewhere',
     data: {},
+    tenantId: 'tenant-1',
     hash: `hash-${seq}`,
     prevHash: `hash-${seq - 1}`,
     sequenceNumber: seq++,
+    hashVersion: 2,
     ...overrides,
   };
 }

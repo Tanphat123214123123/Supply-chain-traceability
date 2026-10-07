@@ -1,8 +1,7 @@
-import { useState } from 'react'
-import { NavLink } from 'react-router-dom'
+import { useEffect, useState } from 'react'
+import { NavLink, useLocation } from 'react-router-dom'
 import {
   LayoutDashboard,
-  PenSquare,
   ListChecks,
   Users,
   BarChart3,
@@ -19,7 +18,7 @@ import {
 } from 'lucide-react'
 import { useAuth } from '../context/AuthContext'
 import { useTheme } from '../context/ThemeContext'
-import { ROLE_LABELS } from '../api/client'
+import { batchApi, ROLE_LABELS } from '../api/client'
 
 const linkClass = ({ isActive }: { isActive: boolean }) =>
   `flex items-center gap-1 text-[13px] px-1.5 py-2 rounded-lg whitespace-nowrap transition-colors font-medium ${
@@ -31,10 +30,12 @@ const linkClass = ({ isActive }: { isActive: boolean }) =>
 // "Cách hoạt động" deliberately isn't here — it's pre-signup education content
 // (already linked from Landing's own nav/footer), not something a logged-in
 // user needs competing for space in their daily work nav.
-const NAV_ITEMS: Array<{ to: string; label: string; icon: LucideIcon; end?: boolean; adminOnly?: boolean }> = [
+// One entry point for doing work: "Việc cần làm". Recording an event is
+// always "process THIS batch", reached from the queue or a batch page — not a
+// free-floating form competing for attention in the nav.
+const NAV_ITEMS: Array<{ to: string; label: string; icon: LucideIcon; end?: boolean; adminOnly?: boolean; badge?: boolean }> = [
   { to: '/dashboard', label: 'Tổng quan', icon: LayoutDashboard, end: true },
-  { to: '/record', label: 'Ghi sự kiện', icon: PenSquare },
-  { to: '/tasks', label: 'Việc cần làm', icon: ListChecks },
+  { to: '/tasks', label: 'Việc cần làm', icon: ListChecks, badge: true },
   { to: '/actors', label: 'Đối tác', icon: Users },
   { to: '/reports', label: 'Báo cáo', icon: BarChart3 },
   { to: '/notifications', label: 'Thông báo', icon: Bell },
@@ -47,6 +48,24 @@ export default function NavBar() {
   const { theme, toggleTheme } = useTheme()
   const isAdmin = actor?.role === 'ADMIN'
   const [mobileOpen, setMobileOpen] = useState(false)
+  const [pendingCount, setPendingCount] = useState(0)
+  const { pathname } = useLocation()
+
+  // Refreshed on navigation: finishing a task returns you to another page, so the badge stays honest.
+  useEffect(() => {
+    if (!actor) return
+    batchApi
+      .pending()
+      .then((items) => setPendingCount(items.length))
+      .catch(() => {})
+  }, [actor, pathname])
+
+  const badge = (show?: boolean) =>
+    show && pendingCount > 0 ? (
+      <span className="ml-0.5 min-w-[1.125rem] h-[1.125rem] px-1 rounded-full bg-brand-600 text-white text-[10px] font-semibold leading-[1.125rem] text-center">
+        {pendingCount > 99 ? '99+' : pendingCount}
+      </span>
+    ) : null
 
   const items = NAV_ITEMS.filter((i) => !i.adminOnly || isAdmin)
 
@@ -63,6 +82,7 @@ export default function NavBar() {
             <NavLink key={item.to} to={item.to} end={item.end} className={linkClass}>
               <item.icon className="w-3.5 h-3.5 flex-shrink-0" />
               {item.label}
+              {badge(item.badge)}
             </NavLink>
           ))}
         </nav>
@@ -100,10 +120,13 @@ export default function NavBar() {
           <button
             type="button"
             onClick={() => setMobileOpen((v) => !v)}
-            aria-label="Mở menu"
-            className="lg:hidden text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-100 p-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800"
+            aria-label={pendingCount > 0 ? `Mở menu (${pendingCount} việc cần làm)` : 'Mở menu'}
+            className="relative lg:hidden text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-100 p-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800"
           >
             {mobileOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
+            {!mobileOpen && pendingCount > 0 && (
+              <span aria-hidden="true" className="absolute top-1 right-1 w-2 h-2 rounded-full bg-brand-600 ring-2 ring-white dark:ring-slate-900" />
+            )}
           </button>
         </div>
       </div>
@@ -120,6 +143,7 @@ export default function NavBar() {
             >
               <item.icon className="w-4 h-4" />
               {item.label}
+              {badge(item.badge)}
             </NavLink>
           ))}
           <NavLink to="/profile" onClick={() => setMobileOpen(false)} className={linkClass}>

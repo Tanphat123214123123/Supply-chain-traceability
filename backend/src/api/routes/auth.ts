@@ -1,7 +1,6 @@
 import { Router } from 'express';
 import { rateLimit } from 'express-rate-limit';
 import { z } from 'zod';
-import { IActorRepo } from '../../repository/interfaces';
 import { AuthService, REFRESH_TOKEN_TTL_MS } from '../../services/authService';
 import { UnauthorizedError } from '../../errors';
 import { requireAuth } from '../middleware/auth';
@@ -22,7 +21,7 @@ function refreshCookieOptions() {
   };
 }
 
-export function authRoutes(authService: AuthService, actorRepo: IActorRepo): Router {
+export function authRoutes(authService: AuthService): Router {
   const router = Router();
 
   // Login attempts are far more brute-forceable than the rest of the API, so
@@ -49,22 +48,42 @@ export function authRoutes(authService: AuthService, actorRepo: IActorRepo): Rou
     }),
   );
 
+  // Sign-up and invite lookups are the other unauthenticated, enumerable
+  // surfaces (invite codes, workspace slugs, emails) — same tight budget.
+  const signupLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    limit: 20,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: 'Too many attempts, please try again in a few minutes' },
+  });
+
   router.post(
     '/register',
+    signupLimiter,
     validateBody(registerSchema),
     asyncHandler(async (req, res) => {
       const dto = req.body as z.infer<typeof registerSchema>;
-      const actor = await authService.register(
-        dto.name,
-        dto.email,
-        dto.password,
-        dto.role,
-        dto.organization,
-        dto.tenantSlug,
-        dto.tenantName,
-      );
+      const actor =
+        dto.mode === 'workspace' ? await authService.registerWorkspace(dto) : await authService.registerWithInvite(dto);
       const { passwordHash: _omit, ...actorPublic } = actor;
       res.status(201).json(actorPublic);
+    }),
+  );
+
+  // Public: lets the sign-up form show "you're joining <workspace> as <role>"
+  // before the person fills anything in.
+  router.get(
+    '/invitations/:code',
+    signupLimiter,
+    asyncHandler(async (req, res) => {
+      const preview = await authService.previewInvitation(req.params.code);
+      res.json({
+        tenantName: preview.tenantName,
+        role: preview.role,
+        email: preview.email,
+        expiresAt: preview.expiresAt,
+      });
     }),
   );
 
@@ -90,7 +109,7 @@ export function authRoutes(authService: AuthService, actorRepo: IActorRepo): Rou
     }),
   );
 
-  const authed = requireAuth(authService, actorRepo);
+  const authed = requireAuth(authService);
 
   router.get(
     '/me',
@@ -106,7 +125,7 @@ export function authRoutes(authService: AuthService, actorRepo: IActorRepo): Rou
     authed,
     validateBody(updateProfileSchema),
     asyncHandler(async (req, res) => {
-      const updated = await authService.updateProfile(req.actor!.id, req.body as z.infer<typeof updateProfileSchema>);
+      const updated = await authService.updateProfile(req.actor!, req.body as z.infer<typeof updateProfileSchema>);
       const { passwordHash: _omit, ...actorPublic } = updated;
       res.json(actorPublic);
     }),
@@ -117,7 +136,7 @@ export function authRoutes(authService: AuthService, actorRepo: IActorRepo): Rou
     authed,
     validateBody(changePasswordSchema),
     asyncHandler(async (req, res) => {
-      await authService.changePassword(req.actor!.id, req.body as z.infer<typeof changePasswordSchema>);
+      await authService.changePassword(req.actor!, req.body as z.infer<typeof changePasswordSchema>);
       res.status(204).send();
     }),
   );
@@ -126,7 +145,7 @@ export function authRoutes(authService: AuthService, actorRepo: IActorRepo): Rou
     '/sessions',
     authed,
     asyncHandler(async (req, res) => {
-      const sessions = await authService.listSessions(req.actor!.id);
+      const sessions = await authService.listSessions(req.actor!);
       res.json(sessions.map((s) => ({ token: s.token.slice(0, 8), expiresAt: s.expiresAt, createdAt: s.createdAt })));
     }),
   );
@@ -135,9 +154,7 @@ export function authRoutes(authService: AuthService, actorRepo: IActorRepo): Rou
     '/sessions/:tokenPrefix',
     authed,
     asyncHandler(async (req, res) => {
-      const sessions = await authService.listSessions(req.actor!.id);
-      const full = sessions.find((s) => s.token.startsWith(req.params.tokenPrefix));
-      if (full) await authService.revokeSession(req.actor!.id, full.token);
+      await authService.revokeSession(req.actor!, req.params.tokenPrefix);
       res.status(204).send();
     }),
   );

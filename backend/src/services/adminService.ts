@@ -1,13 +1,17 @@
 import { v4 as uuidv4 } from 'uuid';
+import { Database } from '../db/database';
 import {
   Actor,
   Anomaly,
   AnomalyListQuery,
+  AuditLogEntry,
   Batch,
   NotificationItem,
+  PaginatedResult,
   PartnerSummary,
+  TraceEvent,
 } from '../domain/types';
-import { ForbiddenError, NotFoundError } from '../errors';
+import { ConflictError, ForbiddenError, NotFoundError } from '../errors';
 import { verifyChain } from '../ledger/hashChain';
 import {
   IActorRepo,
@@ -15,25 +19,36 @@ import {
   IAuditLogRepo,
   IBatchRepo,
   IEventRepo,
+  ITenantRepo,
 } from '../repository/interfaces';
 
 /** Actor directory entry with email redacted unless the viewer is ADMIN or the actor themself. */
 export type ActorDirectoryEntry = Omit<Actor, 'passwordHash' | 'email'> & { email?: string };
 
 // Roles with system-wide oversight responsibility (see full anomaly/recall feed).
-// Everyone else only sees notifications for batches they created or recorded events on.
+// Everyone else only sees notifications for batches they're involved in.
 // Exported so the Socket.IO connection handler (index.ts) can put these roles
 // in the realtime "oversight" room using the same definition, not a copy.
 export const OVERSIGHT_ROLES: Actor['role'][] = ['ADMIN', 'INSPECTOR'];
 
+/** Batches verified per round-trip during an integrity scan — bounds memory regardless of tenant size. */
+const SCAN_PAGE_SIZE = 200;
+
+export interface AdminRepos {
+  tenantRepo: ITenantRepo;
+  actorRepo: IActorRepo;
+  eventRepo: IEventRepo;
+  batchRepo: IBatchRepo;
+  anomalyRepo: IAnomalyRepo;
+  auditLogRepo: IAuditLogRepo;
+}
+
 export class AdminService {
   constructor(
-    private readonly actorRepo: IActorRepo,
-    private readonly eventRepo: IEventRepo,
-    private readonly batchRepo: IBatchRepo,
-    private readonly anomalyRepo: IAnomalyRepo,
-    private readonly auditLogRepo: IAuditLogRepo,
-    private readonly signingKey: string,
+    private readonly db: Database,
+    private readonly repos: AdminRepos,
+    /** Only needed to re-verify legacy v1 (HMAC) events. */
+    private readonly legacyLedgerKey?: string,
   ) {}
 
   private redact(actor: Omit<Actor, 'passwordHash'>, requester: Actor): ActorDirectoryEntry {
@@ -42,94 +57,74 @@ export class AdminService {
   }
 
   async listActors(requester: Actor): Promise<ActorDirectoryEntry[]> {
-    const actors = await this.actorRepo.findAllByTenant(requester.tenantId);
-    return actors.map(({ passwordHash: _omit, ...rest }) => this.redact(rest, requester));
+    return this.db.withTenant(requester.tenantId, async () => {
+      const actors = await this.repos.actorRepo.findAllByTenant(requester.tenantId);
+      return actors.map(({ passwordHash: _omit, ...rest }) => this.redact(rest, requester));
+    });
   }
 
   async getActorDetail(id: string, requester: Actor): Promise<{ actor: ActorDirectoryEntry; batches: Batch[] }> {
-    const actor = await this.actorRepo.findById(id);
-    // Same NotFoundError for "doesn't exist" and "exists in another tenant" —
-    // a 403 would confirm the actor exists to someone with no business knowing.
-    if (!actor || actor.tenantId !== requester.tenantId) throw new NotFoundError('Actor not found');
+    return this.db.withTenant(requester.tenantId, async () => {
+      const actor = await this.repos.actorRepo.findById(id);
+      // Same NotFoundError for "doesn't exist" and "exists in another tenant" —
+      // a 403 would confirm the actor exists to someone with no business knowing.
+      if (!actor || actor.tenantId !== requester.tenantId) throw new NotFoundError('Actor not found');
 
-    const events = await this.eventRepo.findByActorId(id);
-    const batchIds = new Set(events.map((e) => e.batchId));
-    const tenantBatches = await this.batchRepo.findAllByTenant(requester.tenantId);
-    const batches = tenantBatches.filter((b) => batchIds.has(b.id) || b.createdBy === id);
-
-    const { passwordHash: _omit, ...actorPublic } = actor;
-    return { actor: this.redact(actorPublic, requester), batches };
+      const batches = await this.repos.batchRepo.findInvolving(requester.tenantId, id);
+      const { passwordHash: _omit, ...actorPublic } = actor;
+      return { actor: this.redact(actorPublic, requester), batches };
+    });
   }
 
   async setActorStatus(admin: Actor, targetId: string, isActive: boolean): Promise<Actor> {
     if (targetId === admin.id && !isActive) {
       throw new ForbiddenError('Cannot deactivate your own account');
     }
-    const target = await this.actorRepo.findById(targetId);
-    if (!target || target.tenantId !== admin.tenantId) throw new NotFoundError('Actor not found');
-
-    const updated = { ...target, isActive };
-    await this.actorRepo.update(updated);
-    await this.auditLogRepo.create({
-      id: uuidv4(),
-      actorId: admin.id,
-      tenantId: admin.tenantId,
-      action: isActive ? 'ACTOR_ACTIVATED' : 'ACTOR_DEACTIVATED',
-      entityType: 'actor',
-      entityId: targetId,
-      metadata: {},
-      createdAt: new Date(),
+    return this.db.withTenant(admin.tenantId, async () => {
+      const updated = await this.repos.actorRepo.setActive(targetId, isActive);
+      if (!updated || updated.tenantId !== admin.tenantId) throw new NotFoundError('Actor not found');
+      await this.audit(admin, isActive ? 'ACTOR_ACTIVATED' : 'ACTOR_DEACTIVATED', 'actor', targetId, {});
+      return updated;
     });
-    return updated;
   }
 
   async setActorRole(admin: Actor, targetId: string, role: Actor['role']): Promise<Actor> {
     if (targetId === admin.id) {
       throw new ForbiddenError('Cannot change your own role — have another admin do it');
     }
-    const target = await this.actorRepo.findById(targetId);
-    if (!target || target.tenantId !== admin.tenantId) throw new NotFoundError('Actor not found');
-
-    const updated = { ...target, role };
-    await this.actorRepo.update(updated);
-    await this.auditLogRepo.create({
-      id: uuidv4(),
-      actorId: admin.id,
-      tenantId: admin.tenantId,
-      action: 'ACTOR_ROLE_CHANGED',
-      entityType: 'actor',
-      entityId: targetId,
-      metadata: { newRole: role },
-      createdAt: new Date(),
+    return this.db.withTenant(admin.tenantId, async () => {
+      const updated = await this.repos.actorRepo.setRole(targetId, role);
+      if (!updated || updated.tenantId !== admin.tenantId) throw new NotFoundError('Actor not found');
+      await this.audit(admin, 'ACTOR_ROLE_CHANGED', 'actor', targetId, { newRole: role });
+      return updated;
     });
-    return updated;
   }
 
-  async listAnomalies(tenantId: string, query: AnomalyListQuery) {
-    return this.anomalyRepo.findPageByTenant(tenantId, query);
+  async listAuditLogs(admin: Actor, page: number, pageSize: number): Promise<PaginatedResult<AuditLogEntry>> {
+    return this.db.withTenant(admin.tenantId, () => this.repos.auditLogRepo.findPageByTenant(admin.tenantId, page, pageSize));
   }
 
-  async resolveAnomaly(admin: Actor, anomalyId: string) {
-    const existing = await this.anomalyRepo.findById(anomalyId);
-    if (!existing || existing.tenantId !== admin.tenantId) throw new NotFoundError('Anomaly not found');
+  async listAnomalies(admin: Actor, query: AnomalyListQuery): Promise<PaginatedResult<Anomaly>> {
+    return this.db.withTenant(admin.tenantId, () => this.repos.anomalyRepo.findPageByTenant(admin.tenantId, query));
+  }
 
-    const resolved = await this.anomalyRepo.resolve(anomalyId, admin.id);
-    if (!resolved) throw new NotFoundError('Anomaly not found');
-    await this.auditLogRepo.create({
-      id: uuidv4(),
-      actorId: admin.id,
-      tenantId: admin.tenantId,
-      action: 'ANOMALY_RESOLVED',
-      entityType: 'anomaly',
-      entityId: anomalyId,
-      metadata: { batchId: resolved.batchId },
-      createdAt: new Date(),
+  async resolveAnomaly(admin: Actor, anomalyId: string): Promise<Anomaly> {
+    return this.db.withTenant(admin.tenantId, async () => {
+      const resolved = await this.repos.anomalyRepo.resolve(anomalyId, admin.id);
+      if (!resolved) {
+        const existing = await this.repos.anomalyRepo.findById(anomalyId);
+        if (!existing || existing.tenantId !== admin.tenantId) throw new NotFoundError('Anomaly not found');
+        throw new ConflictError('Anomaly has already been resolved');
+      }
+      await this.audit(admin, 'ANOMALY_RESOLVED', 'anomaly', anomalyId, { batchId: resolved.batchId });
+      return resolved;
     });
-    return resolved;
   }
 
-  async listPartners(tenantId: string): Promise<PartnerSummary[]> {
-    const actors = await this.actorRepo.findAllByTenant(tenantId);
+  async listPartners(requester: Actor): Promise<PartnerSummary[]> {
+    const actors = await this.db.withTenant(requester.tenantId, () =>
+      this.repos.actorRepo.findAllByTenant(requester.tenantId),
+    );
     const byOrg = new Map<string, PartnerSummary>();
     for (const actor of actors) {
       const existing = byOrg.get(actor.organization);
@@ -143,13 +138,22 @@ export class AdminService {
     return [...byOrg.values()].sort((a, b) => a.organization.localeCompare(b.organization));
   }
 
+  /**
+   * Anomalies + recalls, newest first. Oversight roles see the whole tenant;
+   * everyone else only batches they created, hold, or recorded an event on —
+   * filtered in SQL, so the LIMIT applies to what the requester may see.
+   */
   async listNotifications(limit: number, requester: Actor): Promise<NotificationItem[]> {
-    const [anomalyPage, recallLogs] = await Promise.all([
-      this.anomalyRepo.findPageByTenant(requester.tenantId, { page: 1, pageSize: limit }),
-      this.auditLogRepo.findByActionAndTenant('BATCH_RECALLED', requester.tenantId, limit),
-    ]);
+    const involving = OVERSIGHT_ROLES.includes(requester.role) ? undefined : requester.id;
 
-    const anomalyItems: NotificationItem[] = anomalyPage.items.map((a) => ({
+    const [anomalies, recallLogs] = await this.db.withTenant(requester.tenantId, () =>
+      Promise.all([
+        this.repos.anomalyRepo.findRecent(requester.tenantId, limit, involving),
+        this.repos.auditLogRepo.findRecentBatchAction(requester.tenantId, 'BATCH_RECALLED', limit, involving),
+      ]),
+    );
+
+    const anomalyItems: NotificationItem[] = anomalies.map((a) => ({
       id: a.id,
       kind: 'ANOMALY',
       message: a.message,
@@ -166,71 +170,102 @@ export class AdminService {
       createdAt: log.createdAt,
     }));
 
-    const combined = [...anomalyItems, ...recallItems].sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
-
-    if (OVERSIGHT_ROLES.includes(requester.role)) {
-      return combined.slice(0, limit);
-    }
-
-    // Non-oversight roles only see notifications for batches they're actually
-    // involved in — otherwise any FARMER account could see every other
-    // organization's anomalies/recalls system-wide.
-    const [ownEvents, tenantBatches] = await Promise.all([
-      this.eventRepo.findByActorId(requester.id),
-      this.batchRepo.findAllByTenant(requester.tenantId),
-    ]);
-    const allowedBatchIds = new Set<string>(ownEvents.map((e) => e.batchId));
-    for (const batch of tenantBatches) {
-      if (batch.createdBy === requester.id) allowedBatchIds.add(batch.id);
-    }
-
-    return combined.filter((item) => allowedBatchIds.has(item.batchId)).slice(0, limit);
+    return [...anomalyItems, ...recallItems]
+      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
+      .slice(0, limit);
   }
 
   /**
-   * Re-verifies every batch's hash chain and persists a CHAIN_TAMPERED anomaly
-   * for any that fail — tampering can only be discovered at read time (it's
-   * evidence someone edited a row directly, not something that happens "at"
-   * write time), so this needs to be run explicitly rather than detected inline
-   * like the rule-based anomalies in anomalyDetector.ts. Run once at server
-   * startup and available on-demand via POST /api/admin/scan-integrity.
+   * Re-verifies every batch's hash chain — including that it still ends at
+   * the head the database recorded, which is what exposes a deleted tail —
+   * and raises a CHAIN_TAMPERED anomaly for each one that fails. Tampering
+   * can only be discovered at read time, so this runs in the background at
+   * startup and on demand via POST /api/admin/scan-integrity.
+   *
+   * Pass `onlyTenantId` to scan one tenant (the admin endpoint); omit it for
+   * the system-wide startup sweep. Each tenant is walked in keyset-paginated
+   * pages, one transaction per page, so memory stays bounded and no lock or
+   * connection is held for the length of a whole tenant.
    */
-  async scanForTamperedChains(): Promise<Anomaly[]> {
-    const batches = await this.batchRepo.findAll();
+  async scanForTamperedChains(onlyTenantId?: string): Promise<Anomaly[]> {
+    const tenantIds = onlyTenantId ? [onlyTenantId] : await this.repos.tenantRepo.listIds();
     const created: Anomaly[] = [];
 
-    for (const batch of batches) {
-      const events = await this.eventRepo.findByBatchId(batch.id);
-      if (events.length === 0 || verifyChain(events, this.signingKey)) continue;
+    for (const tenantId of tenantIds) {
+      let afterId: string | null = null;
+      for (;;) {
+        const cursor: string | null = afterId;
+        const page = await this.db.withTenant(tenantId, async () => {
+          const batches = await this.repos.batchRepo.findPageAfter(tenantId, cursor, SCAN_PAGE_SIZE);
+          const events = await this.repos.eventRepo.findByBatchIds(batches.map((b) => b.id));
+          const eventsByBatch = groupByBatch(events);
 
-      const existing = await this.anomalyRepo.findByBatchId(batch.id);
-      const alreadyFlagged = existing.some((a) => a.type === 'CHAIN_TAMPERED' && !a.resolved);
-      if (alreadyFlagged) continue;
+          for (const batch of batches) {
+            const chain = eventsByBatch.get(batch.id) ?? [];
+            const head = { hash: batch.headHash, eventCount: batch.eventCount };
+            if (verifyChain(chain, { legacyKey: this.legacyLedgerKey, head })) continue;
 
-      const anomaly = await this.anomalyRepo.create({
-        id: uuidv4(),
-        type: 'CHAIN_TAMPERED',
-        severity: 'CRITICAL',
-        message: `Phát hiện dữ liệu bị can thiệp trong chuỗi hash của lô hàng "${batch.productName}"`,
-        batchId: batch.id,
-        tenantId: batch.tenantId,
-        detectedAt: new Date(),
-        resolved: false,
-      });
-      created.push(anomaly);
+            const anomaly = await this.repos.anomalyRepo.createTamperAlertIfAbsent({
+              id: uuidv4(),
+              type: 'CHAIN_TAMPERED',
+              severity: 'CRITICAL',
+              message: `Phát hiện dữ liệu bị can thiệp trong chuỗi hash của lô hàng "${batch.productName}"`,
+              batchId: batch.id,
+              tenantId,
+              detectedAt: new Date(),
+              resolved: false,
+            });
+            if (!anomaly) continue; // already flagged and still open
 
-      await this.auditLogRepo.create({
-        id: uuidv4(),
-        actorId: null,
-        tenantId: batch.tenantId,
-        action: 'CHAIN_INTEGRITY_SCAN_FLAGGED',
-        entityType: 'batch',
-        entityId: batch.id,
-        metadata: {},
-        createdAt: new Date(),
-      });
+            created.push(anomaly);
+            await this.repos.auditLogRepo.create({
+              id: uuidv4(),
+              actorId: null,
+              tenantId,
+              action: 'CHAIN_INTEGRITY_SCAN_FLAGGED',
+              entityType: 'batch',
+              entityId: batch.id,
+              metadata: {},
+              createdAt: new Date(),
+            });
+          }
+          return batches;
+        });
+
+        if (page.length < SCAN_PAGE_SIZE) break;
+        afterId = page[page.length - 1].id;
+      }
     }
 
     return created;
   }
+
+  private async audit(
+    admin: Actor,
+    action: string,
+    entityType: string,
+    entityId: string,
+    metadata: Record<string, unknown>,
+  ): Promise<void> {
+    await this.repos.auditLogRepo.create({
+      id: uuidv4(),
+      actorId: admin.id,
+      tenantId: admin.tenantId,
+      action,
+      entityType,
+      entityId,
+      metadata,
+      createdAt: new Date(),
+    });
+  }
+}
+
+function groupByBatch(events: TraceEvent[]): Map<string, TraceEvent[]> {
+  const map = new Map<string, TraceEvent[]>();
+  for (const event of events) {
+    const list = map.get(event.batchId);
+    if (list) list.push(event);
+    else map.set(event.batchId, [event]);
+  }
+  return map;
 }

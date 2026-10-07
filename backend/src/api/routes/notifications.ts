@@ -1,13 +1,12 @@
 import { Router } from 'express';
-import { IActorRepo } from '../../repository/interfaces';
 import { AdminService } from '../../services/adminService';
 import { AuthService } from '../../services/authService';
 import { requireAuth } from '../middleware/auth';
 import { asyncHandler } from '../middleware/error';
 
-export function notificationsRoutes(adminService: AdminService, authService: AuthService, actorRepo: IActorRepo): Router {
+export function notificationsRoutes(adminService: AdminService, authService: AuthService): Router {
   const router = Router();
-  router.use(requireAuth(authService, actorRepo));
+  router.use(requireAuth(authService));
 
   router.get(
     '/',

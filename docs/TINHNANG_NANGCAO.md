@@ -83,7 +83,9 @@ Danh sách tính năng có thể mở rộng sau khi hoàn thành MVP (giai đo�
 
 ---
 
-## 7. PostgreSQL Full Implementation
+## 7. PostgreSQL Full Implementation — ✅ Đã hoàn thành
+
+> Đã triển khai: PostgreSQL là nơi lưu trữ duy nhất (bỏ in-memory), migrator có checksum, RLS, role quyền tối thiểu, sổ cái chỉ-ghi-thêm. Chi tiết tại [DATABASE.md](DATABASE.md). Phần dưới giữ lại làm ghi chép kế hoạch ban đầu.
 
 **Mô tả:** Thay thế InMemory repo bằng PostgreSQL thật. Cần khi dữ liệu vượt RAM hoặc cần persistence.
 

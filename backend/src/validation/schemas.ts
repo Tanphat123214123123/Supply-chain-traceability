@@ -2,36 +2,52 @@ import { z } from 'zod';
 
 const STAGES = ['HARVEST', 'PROCESSING', 'QUALITY_CHECK', 'PACKAGING', 'DISTRIBUTION', 'RETAIL'] as const;
 const ROLES = ['FARMER', 'PROCESSOR', 'INSPECTOR', 'DISTRIBUTOR', 'RETAILER', 'ADMIN'] as const;
-// Self-service registration must never grant ADMIN — that's an operational
-// escalation only an existing admin can hand out (via PATCH /actors/:id/role).
-// The frontend's Register.tsx already hides ADMIN from the role dropdown, but
-// that's a UI nicety, not enforcement: without this the check is trivially
-// bypassed by posting `role: "ADMIN"` directly to the API.
-const SELF_REGISTERABLE_ROLES = ['FARMER', 'PROCESSOR', 'INSPECTOR', 'DISTRIBUTOR', 'RETAILER'] as const;
 
 export const loginSchema = z.object({
   email: z.string().trim().email(),
   password: z.string().min(1),
 });
 
-export const registerSchema = z.object({
+const registerBase = {
   name: z.string().trim().min(1).max(200),
   email: z.string().trim().email(),
   password: z.string().min(8).max(200),
-  role: z.enum(SELF_REGISTERABLE_ROLES),
   organization: z.string().trim().min(1).max(200),
-  // Workspace identifier (like a Slack workspace slug) — joins an existing
-  // tenant if the slug matches, otherwise creates a new one. Lowercase +
-  // hyphens only, matching how it's displayed/typed (e.g. "acme-coffee").
-  tenantSlug: z
-    .string()
-    .trim()
-    .toLowerCase()
-    .min(2)
-    .max(60)
-    .regex(/^[a-z0-9-]+$/, 'Chỉ dùng chữ thường, số và dấu gạch ngang'),
-  // Only used when `tenantSlug` doesn't exist yet and a new tenant is created.
-  tenantName: z.string().trim().min(1).max(200).optional(),
+};
+
+/**
+ * Two ways in, and neither lets the registrant pick a role:
+ *   • `workspace` founds a new tenant — the registrant becomes its ADMIN;
+ *   • `invite` redeems a code an ADMIN issued — the role is the invitation's.
+ * Joining an existing tenant by knowing its slug is no longer possible.
+ */
+export const registerSchema = z.discriminatedUnion('mode', [
+  z.object({
+    mode: z.literal('workspace'),
+    ...registerBase,
+    // Workspace identifier (like a Slack workspace slug). Lowercase + hyphens
+    // only, matching how it's displayed/typed (e.g. "acme-coffee").
+    tenantSlug: z
+      .string()
+      .trim()
+      .toLowerCase()
+      .min(2)
+      .max(60)
+      .regex(/^[a-z0-9-]+$/, 'Chỉ dùng chữ thường, số và dấu gạch ngang'),
+    tenantName: z.string().trim().min(1).max(200),
+  }),
+  z.object({
+    mode: z.literal('invite'),
+    ...registerBase,
+    inviteCode: z.string().trim().min(8).max(40),
+  }),
+]);
+
+export const createInvitationSchema = z.object({
+  role: z.enum(ROLES),
+  email: z.string().trim().email().optional(),
+  note: z.string().trim().max(200).optional(),
+  expiresInDays: z.number().int().min(1).max(30).default(7),
 });
 
 export const createBatchSchema = z.object({
@@ -47,12 +63,20 @@ export const recallBatchSchema = z.object({
   reason: z.string().trim().min(1).max(1000),
 });
 
+// Stage-specific facts (moisture, grade, destination...). Flat key → scalar
+// only: the values end up in the hash preimage and on printed reports, so
+// nested objects or huge blobs have no business here.
+const eventDataValue = z.union([z.string().trim().max(500), z.number().finite(), z.boolean()]);
+const eventDataSchema = z
+  .record(z.string().regex(/^[a-zA-Z][a-zA-Z0-9]{0,39}$/), eventDataValue)
+  .refine((d) => Object.keys(d).length <= 30, 'Too many data fields');
+
 export const recordEventSchema = z.object({
   batchId: z.string().trim().min(1),
   stage: z.enum(STAGES),
   location: z.string().trim().min(1).max(200),
   notes: z.string().trim().max(2000).optional(),
-  data: z.record(z.string(), z.unknown()).optional(),
+  data: eventDataSchema.optional(),
   // Who takes custody next — required (enforced in SupplyChainService, not
   // here, since it's conditional on role/stage) for non-ADMIN actors advancing
   // to a non-terminal stage.
@@ -66,6 +90,8 @@ export const paginationSchema = z.object({
   // every open batch, which comfortably fits below that ceiling at demo scale.
   pageSize: z.coerce.number().int().min(1).max(500).default(20),
   search: z.string().trim().max(200).optional(),
+  // A stage, or NONE for batches with no event yet — powers the Kanban columns.
+  stage: z.enum([...STAGES, 'NONE']).optional(),
 });
 
 export const updateProfileSchema = z.object({

@@ -39,6 +39,13 @@ export const openApiSpec = {
           isRecalled: { type: 'boolean' },
           recallReason: { type: 'string', nullable: true },
           metadata: { type: 'object' },
+          assignedToActorId: { type: 'string', format: 'uuid', nullable: true },
+          headHash: {
+            type: 'string',
+            pattern: '^[0-9a-f]{64}$',
+            description: 'Hash of the last event, i.e. the recorded head of the batch chain (genesis = 64 zeros).',
+          },
+          eventCount: { type: 'integer', description: 'Number of events in the chain; a verifier compares it to the events returned.' },
         },
       },
       TraceEvent: {
@@ -51,9 +58,17 @@ export const openApiSpec = {
           timestamp: { type: 'string', format: 'date-time' },
           location: { type: 'string' },
           notes: { type: 'string', nullable: true },
-          hash: { type: 'string' },
-          prevHash: { type: 'string' },
+          data: { type: 'object' },
+          hash: { type: 'string', pattern: '^[0-9a-f]{64}$' },
+          prevHash: { type: 'string', pattern: '^[0-9a-f]{64}$' },
           sequenceNumber: { type: 'integer' },
+          hashVersion: {
+            type: 'integer',
+            enum: [1, 2],
+            description:
+              '2 = SHA-256 over the RFC 8785 canonical JSON of {v, salt, batchId, sequenceNumber, prevHash, stage, actorId, timestamp, location, notes, data} — recomputable by anyone. 1 = legacy HMAC, server-verifiable only.',
+          },
+          salt: { type: 'string', pattern: '^[0-9a-f]{64}$', description: 'Per-event random salt (v2 only).' },
         },
       },
       Error: {
@@ -86,9 +101,56 @@ export const openApiSpec = {
     },
     '/auth/register': {
       post: {
-        summary: 'Register a new actor',
-        requestBody: { required: true, content: { 'application/json': { schema: { type: 'object' } } } },
-        responses: { '201': { description: 'Actor created' }, '409': { description: 'Email already registered' } },
+        summary: 'Sign up — found a new workspace (becomes its ADMIN) or redeem an invitation (role from the invite)',
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    required: ['mode', 'name', 'email', 'password', 'organization', 'tenantSlug', 'tenantName'],
+                    properties: {
+                      mode: { type: 'string', enum: ['workspace'] },
+                      name: { type: 'string' },
+                      email: { type: 'string' },
+                      password: { type: 'string', minLength: 8 },
+                      organization: { type: 'string' },
+                      tenantSlug: { type: 'string', pattern: '^[a-z0-9-]+$' },
+                      tenantName: { type: 'string' },
+                    },
+                  },
+                  {
+                    type: 'object',
+                    required: ['mode', 'name', 'email', 'password', 'organization', 'inviteCode'],
+                    properties: {
+                      mode: { type: 'string', enum: ['invite'] },
+                      name: { type: 'string' },
+                      email: { type: 'string' },
+                      password: { type: 'string', minLength: 8 },
+                      organization: { type: 'string' },
+                      inviteCode: { type: 'string', example: 'K7QF-M2XP-9A3R' },
+                    },
+                  },
+                ],
+              },
+            },
+          },
+        },
+        responses: {
+          '201': { description: 'Actor created' },
+          '403': { description: 'Invitation was issued for a different email' },
+          '404': { description: 'Invitation invalid or expired' },
+          '409': { description: 'Email already registered, workspace slug taken, or invitation already used' },
+        },
+      },
+    },
+    '/auth/invitations/{code}': {
+      get: {
+        summary: 'Preview an invitation (workspace name + granted role) — no auth required',
+        parameters: [{ name: 'code', in: 'path', required: true, schema: { type: 'string' } }],
+        responses: { '200': { description: 'Invitation preview' }, '404': { description: 'Invalid or expired' } },
       },
     },
     '/auth/refresh': {
@@ -113,6 +175,11 @@ export const openApiSpec = {
           { name: 'page', in: 'query', schema: { type: 'integer', default: 1 } },
           { name: 'pageSize', in: 'query', schema: { type: 'integer', default: 20 } },
           { name: 'search', in: 'query', schema: { type: 'string' } },
+          {
+            name: 'stage',
+            in: 'query',
+            schema: { type: 'string', enum: ['NONE', 'HARVEST', 'PROCESSING', 'QUALITY_CHECK', 'PACKAGING', 'DISTRIBUTION', 'RETAIL'] },
+          },
         ],
         responses: { '200': { description: 'Paginated batch list' } },
       },
@@ -133,11 +200,11 @@ export const openApiSpec = {
     },
     '/batches/{id}/recall': {
       post: {
-        summary: 'Recall a batch (ADMIN only)',
+        summary: 'Recall a batch (ADMIN or INSPECTOR)',
         security: [{ bearerAuth: [] }],
         parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
         requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', properties: { reason: { type: 'string' } } } } } },
-        responses: { '200': { description: 'Batch recalled' }, '403': { description: 'Not ADMIN' } },
+        responses: { '200': { description: 'Batch recalled' }, '403': { description: 'Not ADMIN or INSPECTOR' } },
       },
     },
     '/batches/{id}/qr': {
@@ -171,7 +238,7 @@ export const openApiSpec = {
       get: {
         summary: 'Public provenance summary — no auth required (QR-scan page)',
         parameters: [{ name: 'batchId', in: 'path', required: true, schema: { type: 'string' } }],
-        responses: { '200': { description: 'Public trace summary' } },
+        responses: { '200': { description: 'Public trace summary with the consumer-facing journey (organizations, places, dates, whitelisted facts)' } },
       },
     },
     '/stats/overview': {
@@ -179,6 +246,46 @@ export const openApiSpec = {
     },
     '/stats/by-stage': {
       get: { summary: 'Event counts by stage', security: [{ bearerAuth: [] }], responses: { '200': { description: 'Stats by stage' } } },
+    },
+    '/stats/attention': {
+      get: {
+        summary: 'Stalled batches (no activity for 3+ days) and the open-anomaly count',
+        security: [{ bearerAuth: [] }],
+        responses: { '200': { description: 'Attention summary' } },
+      },
+    },
+    '/admin/invitations': {
+      get: { summary: 'Recent invitations (ADMIN only)', security: [{ bearerAuth: [] }], responses: { '200': { description: 'Invitations' } } },
+      post: {
+        summary: 'Issue an invitation (ADMIN only) — the raw code is returned once',
+        security: [{ bearerAuth: [] }],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['role'],
+                properties: {
+                  role: { type: 'string', enum: ['FARMER', 'PROCESSOR', 'INSPECTOR', 'DISTRIBUTOR', 'RETAILER', 'ADMIN'] },
+                  email: { type: 'string' },
+                  note: { type: 'string' },
+                  expiresInDays: { type: 'integer', minimum: 1, maximum: 30, default: 7 },
+                },
+              },
+            },
+          },
+        },
+        responses: { '201': { description: '{ invitation, code }' } },
+      },
+    },
+    '/admin/invitations/{id}': {
+      delete: {
+        summary: 'Revoke an unused invitation (ADMIN only)',
+        security: [{ bearerAuth: [] }],
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+        responses: { '200': { description: 'Revoked' }, '409': { description: 'Already used or revoked' } },
+      },
     },
     '/admin/audit-logs': {
       get: {

@@ -1,57 +1,24 @@
+import jwt from 'jsonwebtoken';
 import request from 'supertest';
-import { v4 as uuidv4 } from 'uuid';
 import { createApp } from '../src/app';
-import { InMemoryActorRepo } from '../src/repository/memory/actorRepo';
-import { InMemoryAnomalyRepo } from '../src/repository/memory/anomalyRepo';
-import { InMemoryAuditLogRepo } from '../src/repository/memory/auditLogRepo';
-import { InMemoryBatchRepo } from '../src/repository/memory/batchRepo';
-import { InMemoryEventRepo } from '../src/repository/memory/eventRepo';
-import { InMemoryRefreshTokenRepo } from '../src/repository/memory/refreshTokenRepo';
-import { InMemoryTenantRepo } from '../src/repository/memory/tenantRepo';
-import { SocketRealtimeEmitter } from '../src/realtime';
-import { AdminService } from '../src/services/adminService';
-import { AuthService } from '../src/services/authService';
-import { StatsService } from '../src/services/statsService';
-import { SupplyChainService } from '../src/services/supplyChainService';
-import { TraceService } from '../src/services/traceService';
-import { AppContext } from '../src/bootstrap';
+import { createTenant, TEST_JWT_SECRET, useTestDatabase } from './helpers/testDb';
 
-// Every actor registered in these tests (whether via authService.register
-// directly or POST /api/auth/register) joins this SAME pre-existing tenant —
-// pre-existing matters: AuthService.register makes the first registrant of a
-// genuinely NEW tenant its ADMIN regardless of chosen role.
+// Fixture actors are provisioned straight into this SAME pre-existing tenant —
+// pre-existing matters: AuthService.provisionActor makes the first actor of a
+// genuinely NEW tenant its ADMIN regardless of the role given. Actors that
+// sign up over HTTP join it through an admin-issued invitation (joinViaInvite).
 const TENANT_SLUG = 'test-tenant';
 
-async function makeApp() {
-  const actorRepo = new InMemoryActorRepo();
-  const batchRepo = new InMemoryBatchRepo();
-  const eventRepo = new InMemoryEventRepo();
-  const anomalyRepo = new InMemoryAnomalyRepo();
-  const auditLogRepo = new InMemoryAuditLogRepo();
-  const refreshTokenRepo = new InMemoryRefreshTokenRepo();
-  const tenantRepo = new InMemoryTenantRepo();
-  await tenantRepo.create({ id: uuidv4(), slug: TENANT_SLUG, name: 'Test Tenant', createdAt: new Date() });
-  const authService = new AuthService(actorRepo, refreshTokenRepo, auditLogRepo, tenantRepo, 'test-secret');
-  const ctx: AppContext = {
-    tenantRepo,
-    actorRepo,
-    batchRepo,
-    eventRepo,
-    anomalyRepo,
-    auditLogRepo,
-    refreshTokenRepo,
-    authService,
-    supplyChainService: new SupplyChainService(batchRepo, eventRepo, anomalyRepo, auditLogRepo, actorRepo, 'test-signing-key'),
-    traceService: new TraceService(batchRepo, eventRepo, anomalyRepo, 'test-signing-key'),
-    statsService: new StatsService(batchRepo, eventRepo, anomalyRepo),
-    adminService: new AdminService(actorRepo, eventRepo, batchRepo, anomalyRepo, auditLogRepo, 'test-signing-key'),
-    realtime: new SocketRealtimeEmitter(),
-    usingPostgres: false,
-  };
-  const app = createApp(ctx, 'http://localhost:5173');
+const getDb = useTestDatabase();
 
-  const farmer = await authService.register('Farmer', 'farmer@test.com', 'password1', 'FARMER', 'Farm', TENANT_SLUG);
-  const admin = await authService.register('Admin', 'admin@test.com', 'password1', 'ADMIN', 'HQ', TENANT_SLUG);
+async function makeApp() {
+  const t = getDb();
+  await createTenant(t, TENANT_SLUG);
+  const { authService } = t.ctx;
+  const app = createApp(t.ctx, 'http://localhost:5173');
+
+  const farmer = await authService.provisionActor('Farmer', 'farmer@test.com', 'password1', 'FARMER', 'Farm', TENANT_SLUG);
+  const admin = await authService.provisionActor('Admin', 'admin@test.com', 'password1', 'ADMIN', 'HQ', TENANT_SLUG);
 
   const farmerLogin = await authService.login({ email: 'farmer@test.com', password: 'password1' });
   const adminLogin = await authService.login({ email: 'admin@test.com', password: 'password1' });
@@ -63,6 +30,34 @@ async function makeApp() {
     farmerToken: farmerLogin.token,
     adminToken: adminLogin.token,
   };
+}
+
+type App = Awaited<ReturnType<typeof makeApp>>['app'];
+
+/** The real public sign-up path: an ADMIN issues an invitation, the newcomer redeems it. */
+async function joinViaInvite(
+  app: App,
+  adminToken: string,
+  person: { name: string; email: string; role: string; organization: string },
+): Promise<string> {
+  const invite = await request(app)
+    .post('/api/admin/invitations')
+    .set('Authorization', `Bearer ${adminToken}`)
+    .send({ role: person.role });
+  expect(invite.status).toBe(201);
+
+  const register = await request(app).post('/api/auth/register').send({
+    mode: 'invite',
+    name: person.name,
+    email: person.email,
+    password: 'password1',
+    organization: person.organization,
+    inviteCode: invite.body.code,
+  });
+  expect(register.status).toBe(201);
+
+  const login = await request(app).post('/api/auth/login').send({ email: person.email, password: 'password1' });
+  return login.body.token as string;
 }
 
 describe('API route wiring', () => {
@@ -132,14 +127,13 @@ describe('API route wiring', () => {
   });
 
   it('allows an INSPECTOR (not just ADMIN) to recall a batch', async () => {
-    const { app, farmerToken } = await makeApp();
-    await request(app)
-      .post('/api/auth/register')
-      .send({ name: 'Inspector', email: 'inspector@test.com', password: 'password1', role: 'INSPECTOR', organization: 'QA Lab', tenantSlug: TENANT_SLUG });
-    const inspectorLogin = await request(app)
-      .post('/api/auth/login')
-      .send({ email: 'inspector@test.com', password: 'password1' });
-    const inspectorToken = inspectorLogin.body.token;
+    const { app, farmerToken, adminToken } = await makeApp();
+    const inspectorToken = await joinViaInvite(app, adminToken, {
+      name: 'Inspector',
+      email: 'inspector@test.com',
+      role: 'INSPECTOR',
+      organization: 'QA Lab',
+    });
 
     const create = await request(app)
       .post('/api/batches')
@@ -156,17 +150,17 @@ describe('API route wiring', () => {
   });
 
   it('rejects a non-FARMER, non-ADMIN role from creating a batch (a RETAILER cannot fabricate one out of thin air)', async () => {
-    const { app } = await makeApp();
-    await request(app)
-      .post('/api/auth/register')
-      .send({ name: 'Retailer', email: 'retailer@test.com', password: 'password1', role: 'RETAILER', organization: 'Shop', tenantSlug: TENANT_SLUG });
-    const retailerLogin = await request(app)
-      .post('/api/auth/login')
-      .send({ email: 'retailer@test.com', password: 'password1' });
+    const { app, adminToken } = await makeApp();
+    const retailerToken = await joinViaInvite(app, adminToken, {
+      name: 'Retailer',
+      email: 'retailer@test.com',
+      role: 'RETAILER',
+      organization: 'Shop',
+    });
 
     const create = await request(app)
       .post('/api/batches')
-      .set('Authorization', `Bearer ${retailerLogin.body.token}`)
+      .set('Authorization', `Bearer ${retailerToken}`)
       .send({ productName: 'X', productType: 'x', origin: 'x', quantity: 1, unit: 'kg' });
 
     expect(create.status).toBe(403);
@@ -182,24 +176,92 @@ describe('API route wiring', () => {
 
   it('returns 409 (not a generic 400) for a duplicate email on register', async () => {
     const { app } = await makeApp();
-    const res = await request(app)
-      .post('/api/auth/register')
-      .send({ name: 'Dup', email: 'farmer@test.com', password: 'password1', role: 'FARMER', organization: 'x', tenantSlug: TENANT_SLUG });
+    const res = await request(app).post('/api/auth/register').send({
+      mode: 'workspace',
+      name: 'Dup',
+      email: 'farmer@test.com',
+      password: 'password1',
+      organization: 'x',
+      tenantSlug: 'dup-co',
+      tenantName: 'Dup Co',
+    });
     expect(res.status).toBe(409);
   });
 
-  it('rejects self-registration as ADMIN (must be granted by an existing admin instead)', async () => {
+  it('no longer lets anyone join an existing workspace by its slug with a self-chosen role', async () => {
     const { app } = await makeApp();
-    const res = await request(app)
+    // The old request shape: join by slug, pick INSPECTOR (which can recall batches).
+    const legacy = await request(app)
       .post('/api/auth/register')
-      .send({ name: 'Wannabe Admin', email: 'wannabe@test.com', password: 'password1', role: 'ADMIN', organization: 'x', tenantSlug: TENANT_SLUG });
-    expect(res.status).toBe(400);
+      .send({ name: 'Intruder', email: 'intruder@test.com', password: 'password1', role: 'INSPECTOR', organization: 'x', tenantSlug: TENANT_SLUG });
+    expect(legacy.status).toBe(400);
 
-    // Confirm it's really rejected end-to-end, not just schema-shaped: no account was created.
-    const login = await request(app)
-      .post('/api/auth/login')
-      .send({ email: 'wannabe@test.com', password: 'password1' });
+    // Founding a "new" workspace on a taken slug is a conflict, never a silent join.
+    const takenSlug = await request(app).post('/api/auth/register').send({
+      mode: 'workspace',
+      name: 'Intruder',
+      email: 'intruder@test.com',
+      password: 'password1',
+      organization: 'x',
+      tenantSlug: TENANT_SLUG,
+      tenantName: 'Mine now',
+    });
+    expect(takenSlug.status).toBe(409);
+
+    const login = await request(app).post('/api/auth/login').send({ email: 'intruder@test.com', password: 'password1' });
     expect(login.status).toBe(401);
+  });
+
+  it('grants the invitation\'s role, and each invitation works exactly once', async () => {
+    const { app, adminToken } = await makeApp();
+    const invite = await request(app)
+      .post('/api/admin/invitations')
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({ role: 'DISTRIBUTOR', email: 'driver@test.com' });
+    expect(invite.status).toBe(201);
+    expect(invite.body.code).toMatch(/^[A-Z2-9]{4}-[A-Z2-9]{4}-[A-Z2-9]{4}$/);
+
+    // Public preview — what the sign-up form shows. Lower-case, dash-less input still matches.
+    const preview = await request(app).get(`/api/auth/invitations/${invite.body.code.replace(/-/g, '').toLowerCase()}`);
+    expect(preview.status).toBe(200);
+    expect(preview.body).toMatchObject({ role: 'DISTRIBUTOR', tenantName: `Tenant ${TENANT_SLUG}` });
+
+    const base = { mode: 'invite', password: 'password1', organization: 'Trucks', inviteCode: invite.body.code };
+
+    // Email-bound invitation: someone else holding the code can't use it.
+    const wrongEmail = await request(app).post('/api/auth/register').send({ ...base, name: 'X', email: 'other@test.com' });
+    expect(wrongEmail.status).toBe(403);
+
+    const ok = await request(app).post('/api/auth/register').send({ ...base, name: 'Driver', email: 'driver@test.com' });
+    expect(ok.status).toBe(201);
+    expect(ok.body.role).toBe('DISTRIBUTOR');
+
+    const reuse = await request(app).post('/api/auth/register').send({ ...base, name: 'Again', email: 'DRIVER2@test.com' });
+    expect(reuse.status).toBe(404);
+    expect((await request(app).get(`/api/auth/invitations/${invite.body.code}`)).status).toBe(404);
+  });
+
+  it('lets an ADMIN revoke an unused invitation, and only ADMIN may issue them', async () => {
+    const { app, adminToken, farmerToken } = await makeApp();
+    const forbidden = await request(app)
+      .post('/api/admin/invitations')
+      .set('Authorization', `Bearer ${farmerToken}`)
+      .send({ role: 'ADMIN' });
+    expect(forbidden.status).toBe(403);
+
+    const invite = await request(app)
+      .post('/api/admin/invitations')
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({ role: 'PROCESSOR' });
+    const revoke = await request(app)
+      .delete(`/api/admin/invitations/${invite.body.invitation.id}`)
+      .set('Authorization', `Bearer ${adminToken}`);
+    expect(revoke.status).toBe(200);
+    expect(revoke.body.revokedAt).toBeTruthy();
+
+    const list = await request(app).get('/api/admin/invitations').set('Authorization', `Bearer ${adminToken}`);
+    expect(list.body).toHaveLength(1);
+    expect((await request(app).get(`/api/auth/invitations/${invite.body.code}`)).status).toBe(404);
   });
 
   it('rejects a batch with a negative quantity (Zod validation)', async () => {
@@ -237,37 +299,37 @@ describe('API route wiring', () => {
   });
 
   it('rejects an unrelated actor of the right role from recording an event on someone else\'s batch', async () => {
-    const { app, farmerToken } = await makeApp();
+    const { app, farmerToken, adminToken } = await makeApp();
     const create = await request(app)
       .post('/api/batches')
       .set('Authorization', `Bearer ${farmerToken}`)
       .send({ productName: 'X', productType: 'x', origin: 'x', quantity: 1, unit: 'kg' });
 
-    await request(app)
-      .post('/api/auth/register')
-      .send({ name: 'Random Processor', email: 'randproc@test.com', password: 'password1', role: 'PROCESSOR', organization: 'Unrelated Co', tenantSlug: TENANT_SLUG });
-    const randomProcessorLogin = await request(app)
-      .post('/api/auth/login')
-      .send({ email: 'randproc@test.com', password: 'password1' });
+    const randomProcessorToken = await joinViaInvite(app, adminToken, {
+      name: 'Random Processor',
+      email: 'randproc@test.com',
+      role: 'PROCESSOR',
+      organization: 'Unrelated Co',
+    });
 
     // This processor has never been handed this batch — a bare role match
     // must not be enough to let them record an event on it.
     const res = await request(app)
       .post('/api/events')
-      .set('Authorization', `Bearer ${randomProcessorLogin.body.token}`)
+      .set('Authorization', `Bearer ${randomProcessorToken}`)
       .send({ batchId: create.body.id, stage: 'PROCESSING', location: 'Random warehouse' });
     expect(res.status).toBe(403);
   });
 
   it('hands custody off from one actor to the next, and requires assignNextTo to do so', async () => {
-    const { app, farmerToken, admin } = await makeApp();
-    await request(app)
-      .post('/api/auth/register')
-      .send({ name: 'Processor', email: 'processor-e2e@test.com', password: 'password1', role: 'PROCESSOR', organization: 'Xưởng', tenantSlug: TENANT_SLUG });
-    const processorLogin = await request(app)
-      .post('/api/auth/login')
-      .send({ email: 'processor-e2e@test.com', password: 'password1' });
-    const processorToken = processorLogin.body.token;
+    const { app, farmerToken, admin, adminToken } = await makeApp();
+    const processorToken = await joinViaInvite(app, adminToken, {
+      name: 'Processor',
+      email: 'processor-e2e@test.com',
+      role: 'PROCESSOR',
+      organization: 'Xưởng',
+    });
+    const processorId = (await request(app).get('/api/auth/me').set('Authorization', `Bearer ${processorToken}`)).body.id;
 
     const create = await request(app)
       .post('/api/batches')
@@ -291,7 +353,7 @@ describe('API route wiring', () => {
     const harvest = await request(app)
       .post('/api/events')
       .set('Authorization', `Bearer ${farmerToken}`)
-      .send({ batchId: create.body.id, stage: 'HARVEST', location: 'x', assignNextTo: processorLogin.body.actor.id });
+      .send({ batchId: create.body.id, stage: 'HARVEST', location: 'x', assignNextTo: processorId });
     expect(harvest.status).toBe(201);
 
     // Now the processor (and only the processor) can record PROCESSING.
@@ -317,8 +379,19 @@ describe('API route wiring', () => {
 
     const res = await request(app).get('/api/batches/export?format=csv').set('Authorization', `Bearer ${farmerToken}`);
     expect(res.status).toBe(200);
-    expect(res.text).toContain('productName');
+    expect(res.headers['content-type']).toMatch(/^text\/csv; charset=utf-8/);
+    // RFC 4180: CRLF records, quoted fields; UTF-8 BOM so spreadsheet apps detect the encoding.
+    expect(res.text.startsWith('﻿"id","productName"')).toBe(true);
+    expect(res.text.split('\r\n')).toHaveLength(3); // header, one row, trailing CRLF
     expect(res.text).toContain('"X"');
+  });
+
+  it('exports a header-only CSV (not an empty body) when nothing matches', async () => {
+    const { app, farmerToken } = await makeApp();
+    const res = await request(app)
+      .get('/api/batches/export?format=csv&origin=nowhere')
+      .set('Authorization', `Bearer ${farmerToken}`);
+    expect(res.text).toBe('﻿"id","productName","productType","origin","quantity","unit","currentStage","isRecalled","createdAt"\r\n');
   });
 
   it('exchanges the httpOnly refresh cookie for a new access token', async () => {
@@ -519,6 +592,66 @@ describe('API route wiring', () => {
     expect(res.body.info.title).toBe('TraceChain API');
   });
 
+  it('reports database health', async () => {
+    const { app } = await makeApp();
+    const res = await request(app).get('/health');
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ status: 'ok', database: 'ok' });
+  });
+
+  it('answers 404 (never 500) for malformed ids on public and authenticated routes', async () => {
+    const { app, farmerToken } = await makeApp();
+    for (const path of ['/api/trace/public/not-a-uuid', "/api/trace/public/'%20OR%201=1--/full"]) {
+      expect((await request(app).get(path)).status).toBe(404);
+    }
+    const res = await request(app).get('/api/batches/xyz').set('Authorization', `Bearer ${farmerToken}`);
+    expect(res.status).toBe(404);
+  });
+
+  it('rejects access tokens minted before tenantId was part of the payload', async () => {
+    const { app, farmer } = await makeApp();
+    const oldStyle = jwt.sign({ actorId: farmer.id, role: farmer.role, email: farmer.email }, TEST_JWT_SECRET);
+    const res = await request(app).get('/api/auth/me').set('Authorization', `Bearer ${oldStyle}`);
+    expect(res.status).toBe(401);
+  });
+
+  it('returns 409 when recalling an already-recalled batch', async () => {
+    const { app, farmerToken, adminToken } = await makeApp();
+    const create = await request(app)
+      .post('/api/batches')
+      .set('Authorization', `Bearer ${farmerToken}`)
+      .send({ productName: 'X', productType: 'x', origin: 'x', quantity: 1, unit: 'kg' });
+    const first = await request(app)
+      .post(`/api/batches/${create.body.id}/recall`)
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({ reason: 'a' });
+    expect(first.status).toBe(200);
+    const second = await request(app)
+      .post(`/api/batches/${create.body.id}/recall`)
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({ reason: 'b' });
+    expect(second.status).toBe(409);
+  });
+
+  it('public chain verifier exposes salts and head status, and hides tenant ids', async () => {
+    const { app, farmerToken, admin } = await makeApp();
+    const create = await request(app)
+      .post('/api/batches')
+      .set('Authorization', `Bearer ${farmerToken}`)
+      .send({ productName: 'X', productType: 'x', origin: 'x', quantity: 1, unit: 'kg' });
+    await request(app)
+      .post('/api/events')
+      .set('Authorization', `Bearer ${farmerToken}`)
+      .send({ batchId: create.body.id, stage: 'HARVEST', location: 'x', assignNextTo: admin.id });
+
+    const res = await request(app).get(`/api/trace/public/${create.body.id}/full`);
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ valid: true, headMatches: true, legacyEventCount: 0 });
+    expect(res.body.events[0]).toMatchObject({ hashVersion: 2 });
+    expect(res.body.events[0].salt).toMatch(/^[0-9a-f]{64}$/);
+    expect(res.body.events[0].tenantId).toBeUndefined();
+  });
+
   describe('tenant isolation', () => {
     it('keeps a batch, its actors, and its stats invisible to a completely different tenant', async () => {
       const { app, farmerToken, farmer } = await makeApp();
@@ -528,15 +661,15 @@ describe('API route wiring', () => {
         .send({ productName: 'Tenant A Batch', productType: 'x', origin: 'x', quantity: 1, unit: 'kg' });
       expect(create.status).toBe(201);
 
-      // A second tenant that has never heard of the first one — created by
-      // registering with a brand-new, never-seen-before tenantSlug.
+      // A second tenant that has never heard of the first one — founded
+      // through the public "new workspace" sign-up.
       const outsiderRegister = await request(app)
         .post('/api/auth/register')
         .send({
+          mode: 'workspace',
           name: 'Outsider Admin',
           email: 'outsider@other-tenant.test',
           password: 'password1',
-          role: 'FARMER', // ignored — first registrant of a new tenant always becomes its ADMIN
           organization: 'Other Co',
           tenantSlug: 'other-tenant',
           tenantName: 'Other Tenant Inc',

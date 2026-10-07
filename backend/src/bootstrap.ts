@@ -9,6 +9,7 @@ import { PostgresAnomalyRepo } from './repository/postgres/anomalyRepo';
 import { PostgresAuditLogRepo } from './repository/postgres/auditLogRepo';
 import { PostgresBatchRepo } from './repository/postgres/batchRepo';
 import { PostgresEventRepo } from './repository/postgres/eventRepo';
+import { PostgresInvitationRepo } from './repository/postgres/invitationRepo';
 import { PostgresRefreshTokenRepo } from './repository/postgres/refreshTokenRepo';
 import { PostgresStatsRepo } from './repository/postgres/statsRepo';
 import { PostgresTenantRepo } from './repository/postgres/tenantRepo';
@@ -46,6 +47,7 @@ export function createContext(db: Database, config: AppConfig): AppContext {
   const auditLogRepo = new PostgresAuditLogRepo(db);
   const refreshTokenRepo = new PostgresRefreshTokenRepo(db);
   const statsRepo = new PostgresStatsRepo(db);
+  const invitationRepo = new PostgresInvitationRepo(db);
 
   const realtime = new SocketRealtimeEmitter();
 
@@ -54,12 +56,12 @@ export function createContext(db: Database, config: AppConfig): AppContext {
     realtime,
     authService: new AuthService(
       db,
-      { actorRepo, refreshTokenRepo, auditLogRepo, tenantRepo },
+      { actorRepo, refreshTokenRepo, auditLogRepo, tenantRepo, invitationRepo },
       config.jwtSecret,
       config.auth,
     ),
     supplyChainService: new SupplyChainService(db, { batchRepo, eventRepo, anomalyRepo, auditLogRepo, actorRepo }, realtime),
-    traceService: new TraceService(db, { batchRepo, eventRepo, anomalyRepo }, config.legacyLedgerKey),
+    traceService: new TraceService(db, { batchRepo, eventRepo, anomalyRepo, actorRepo }, config.legacyLedgerKey),
     statsService: new StatsService(db, statsRepo),
     adminService: new AdminService(
       db,
@@ -73,7 +75,7 @@ export function createContext(db: Database, config: AppConfig): AppContext {
 
 /**
  * Every demo account joins this SAME pre-existing tenant (created before any
- * of them register) — pre-existing matters: AuthService.register makes the
+ * of them register) — pre-existing matters: AuthService.provisionActor makes the
  * first registrant of a genuinely NEW tenant its ADMIN regardless of chosen
  * role, which would silently turn farmer@demo.com into an admin otherwise.
  */
@@ -104,7 +106,7 @@ export async function seedDemoData(ctx: AppContext): Promise<void> {
 
   for (const account of DEMO_ACCOUNTS) {
     if (await actorRepo.lookupByEmail(account.email)) continue;
-    await ctx.authService.register(
+    await ctx.authService.provisionActor(
       account.name,
       account.email,
       DEMO_PASSWORD,

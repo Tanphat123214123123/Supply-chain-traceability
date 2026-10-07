@@ -4,8 +4,8 @@ import { AdminService } from '../../services/adminService';
 import { AuthService } from '../../services/authService';
 import { requireAuth, requireRole } from '../middleware/auth';
 import { asyncHandler } from '../middleware/error';
-import { validateQuery } from '../middleware/validate';
-import { anomalyListQuerySchema, paginationSchema } from '../../validation/schemas';
+import { validateBody, validateQuery } from '../middleware/validate';
+import { anomalyListQuerySchema, createInvitationSchema, paginationSchema } from '../../validation/schemas';
 
 export function adminRoutes(adminService: AdminService, authService: AuthService): Router {
   const router = Router();
@@ -34,6 +34,29 @@ export function adminRoutes(adminService: AdminService, authService: AuthService
     '/anomalies/:id/resolve',
     asyncHandler(async (req, res) => {
       res.json(await adminService.resolveAnomaly(req.actor!, req.params.id));
+    }),
+  );
+
+  router.get(
+    '/invitations',
+    asyncHandler(async (req, res) => {
+      res.json(await authService.listInvitations(req.actor!));
+    }),
+  );
+
+  router.post(
+    '/invitations',
+    validateBody(createInvitationSchema),
+    asyncHandler(async (req, res) => {
+      const dto = req.body as z.infer<typeof createInvitationSchema>;
+      res.status(201).json(await authService.createInvitation(req.actor!, dto));
+    }),
+  );
+
+  router.delete(
+    '/invitations/:id',
+    asyncHandler(async (req, res) => {
+      res.json(await authService.revokeInvitation(req.actor!, req.params.id));
     }),
   );
 

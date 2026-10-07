@@ -3,7 +3,7 @@ import { Batch, BatchListQuery, PaginatedResult, SupplyChainStage, STAGE_ORDER }
 import { BatchExportFilters, IBatchRepo, NewBatch } from '../interfaces';
 import { escapeLike, involvesActor, WithTotal } from './sql';
 
-interface BatchRow {
+export interface BatchRow {
   id: string;
   product_name: string;
   product_type: string;
@@ -20,13 +20,18 @@ interface BatchRow {
   assigned_to_actor_id: string | null;
   head_hash: string;
   event_count: number;
+  last_event_at: Date | null;
 }
 
-const COLUMNS = `b.id, b.product_name, b.product_type, b.origin, b.quantity, b.unit, b.created_at, b.created_by,
+// last_event_at rides on the UNIQUE (batch_id, sequence_number) index: the
+// newest event is the one with the highest sequence number.
+export const BATCH_COLUMNS = `b.id, b.product_name, b.product_type, b.origin, b.quantity, b.unit, b.created_at, b.created_by,
   b.tenant_id, b.current_stage, b.is_recalled, b.recall_reason, b.metadata, b.assigned_to_actor_id,
-  b.head_hash, b.event_count`;
+  b.head_hash, b.event_count,
+  (SELECT le.timestamp FROM trace_events le WHERE le.batch_id = b.id
+    ORDER BY le.sequence_number DESC LIMIT 1) AS last_event_at`;
 
-function toBatch(row: BatchRow): Batch {
+export function toBatch(row: BatchRow): Batch {
   return {
     id: row.id,
     productName: row.product_name,
@@ -44,6 +49,7 @@ function toBatch(row: BatchRow): Batch {
     assignedToActorId: row.assigned_to_actor_id ?? undefined,
     headHash: row.head_hash,
     eventCount: row.event_count,
+    lastEventAt: row.last_event_at ?? undefined,
   };
 }
 
@@ -57,7 +63,7 @@ export class PostgresBatchRepo implements IBatchRepo {
       `INSERT INTO batches AS b (id, product_name, product_type, origin, quantity, unit, created_at, created_by,
                                  tenant_id, current_stage, is_recalled, recall_reason, metadata, assigned_to_actor_id)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
-       RETURNING ${COLUMNS}`,
+       RETURNING ${BATCH_COLUMNS}`,
       [
         batch.id,
         batch.productName,
@@ -80,13 +86,13 @@ export class PostgresBatchRepo implements IBatchRepo {
 
   async findById(id: string): Promise<Batch | null> {
     if (!isUuid(id)) return null;
-    const result = await this.db.query<BatchRow>(`SELECT ${COLUMNS} FROM batches b WHERE b.id = $1`, [id]);
+    const result = await this.db.query<BatchRow>(`SELECT ${BATCH_COLUMNS} FROM batches b WHERE b.id = $1`, [id]);
     return result.rows[0] ? toBatch(result.rows[0]) : null;
   }
 
   async findByIdForUpdate(id: string): Promise<Batch | null> {
     if (!isUuid(id)) return null;
-    const result = await this.db.query<BatchRow>(`SELECT ${COLUMNS} FROM batches b WHERE b.id = $1 FOR UPDATE`, [id]);
+    const result = await this.db.query<BatchRow>(`SELECT ${BATCH_COLUMNS} FROM batches b WHERE b.id = $1 FOR UPDATE`, [id]);
     return result.rows[0] ? toBatch(result.rows[0]) : null;
   }
 
@@ -106,23 +112,35 @@ export class PostgresBatchRepo implements IBatchRepo {
     return result.rows[0].exists;
   }
 
-  async findPageByTenant(tenantId: string, { page, pageSize, search }: BatchListQuery): Promise<PaginatedResult<Batch>> {
+  async findPageByTenant(
+    tenantId: string,
+    { page, pageSize, search, stage }: BatchListQuery,
+  ): Promise<PaginatedResult<Batch>> {
     const offset = (page - 1) * pageSize;
     const term = search?.trim() ? search.trim() : null;
+    // $4: NULL = any stage, 'NONE' = no event recorded yet, otherwise that exact current stage.
     const where = `b.tenant_id = $1
       AND ($2::text IS NULL
            OR b.product_name ILIKE '%' || $2 || '%'
            OR b.origin ILIKE '%' || $2 || '%'
-           OR b.id::text LIKE $3 || '%')`;
-    const params = [tenantId, term ? escapeLike(term) : null, term ? escapeLike(term.toLowerCase()) : null];
+           OR b.id::text LIKE $3 || '%')
+      AND ($4::text IS NULL
+           OR ($4 = 'NONE' AND b.current_stage IS NULL)
+           OR b.current_stage = $4)`;
+    const params = [
+      tenantId,
+      term ? escapeLike(term) : null,
+      term ? escapeLike(term.toLowerCase()) : null,
+      stage ?? null,
+    ];
 
     // One statement → items and total come from the same snapshot.
     const result = await this.db.query<BatchRow & WithTotal>(
-      `SELECT ${COLUMNS}, count(*) OVER () AS total_count
+      `SELECT ${BATCH_COLUMNS}, count(*) OVER () AS total_count
          FROM batches b
         WHERE ${where}
         ORDER BY b.created_at DESC, b.id DESC
-        LIMIT $4 OFFSET $5`,
+        LIMIT $5 OFFSET $6`,
       [...params, pageSize, offset],
     );
 
@@ -137,7 +155,7 @@ export class PostgresBatchRepo implements IBatchRepo {
 
   async findForExport(tenantId: string, { from, to, origin }: BatchExportFilters): Promise<Batch[]> {
     const result = await this.db.query<BatchRow>(
-      `SELECT ${COLUMNS}
+      `SELECT ${BATCH_COLUMNS}
          FROM batches b
         WHERE b.tenant_id = $1
           AND ($2::timestamptz IS NULL OR b.created_at >= $2)
@@ -159,7 +177,7 @@ export class PostgresBatchRepo implements IBatchRepo {
     // nothing is recorded yet); past the terminal stage the subscript is NULL,
     // which matches nothing.
     const result = await this.db.query<BatchRow>(
-      `SELECT ${COLUMNS}
+      `SELECT ${BATCH_COLUMNS}
          FROM batches b
         WHERE b.tenant_id = $1
           AND NOT b.is_recalled
@@ -173,7 +191,7 @@ export class PostgresBatchRepo implements IBatchRepo {
 
   async findInvolving(tenantId: string, actorId: string): Promise<Batch[]> {
     const result = await this.db.query<BatchRow>(
-      `SELECT ${COLUMNS}
+      `SELECT ${BATCH_COLUMNS}
          FROM batches b
         WHERE b.tenant_id = $1 AND ${involvesActor('$2')}
         ORDER BY b.created_at DESC, b.id DESC`,
@@ -184,7 +202,7 @@ export class PostgresBatchRepo implements IBatchRepo {
 
   async findPageAfter(tenantId: string, afterId: string | null, limit: number): Promise<Batch[]> {
     const result = await this.db.query<BatchRow>(
-      `SELECT ${COLUMNS}
+      `SELECT ${BATCH_COLUMNS}
          FROM batches b
         WHERE b.tenant_id = $1 AND ($2::uuid IS NULL OR b.id > $2)
         ORDER BY b.id
@@ -209,7 +227,7 @@ export class PostgresBatchRepo implements IBatchRepo {
     const result = await this.db.query<BatchRow>(
       `UPDATE batches AS b SET is_recalled = true, recall_reason = $2
         WHERE b.id = $1 AND NOT b.is_recalled
-        RETURNING ${COLUMNS}`,
+        RETURNING ${BATCH_COLUMNS}`,
       [id, reason],
     );
     return result.rows[0] ? toBatch(result.rows[0]) : null;

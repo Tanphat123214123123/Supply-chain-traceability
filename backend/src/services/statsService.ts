@@ -1,5 +1,13 @@
 import { Database } from '../db/database';
-import { STAGE_ORDER, StatsByDay, StatsByOrigin, StatsByStage, StatsOverview } from '../domain/types';
+import {
+  AttentionSummary,
+  STALLED_AFTER_DAYS,
+  STAGE_ORDER,
+  StatsByDay,
+  StatsByOrigin,
+  StatsByStage,
+  StatsOverview,
+} from '../domain/types';
 import { IStatsRepo } from '../repository/interfaces';
 
 /** How many most-recent active days the "batches per day" chart shows. */
@@ -32,5 +40,10 @@ export class StatsService {
 
   async byOrigin(tenantId: string): Promise<StatsByOrigin[]> {
     return this.db.withTenant(tenantId, () => this.statsRepo.byOrigin(tenantId));
+  }
+
+  /** "What needs a human today": batches stuck at a stage, and anomalies nobody has resolved. */
+  async attention(tenantId: string): Promise<AttentionSummary> {
+    return this.db.withTenant(tenantId, () => this.statsRepo.attention(tenantId, STALLED_AFTER_DAYS, 8));
   }
 }

@@ -1,0 +1,16 @@
+{
+  // Editor + `npm run typecheck` config for the test suite. The root
+  // tsconfig.json only covers src/ (it drives the production build, and
+  // jest/supertest types must not leak into it); without this file VS Code
+  // checks tests in an inferred project with no jest globals.
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "rootDir": "..",
+    "noEmit": true,
+    "declaration": false,
+    "types": ["jest", "node"]
+  },
+  "include": ["./**/*.ts", "../src/**/*.ts"],
+  // Re-declared: the base config's exclude would drop this very folder.
+  "exclude": ["../node_modules", "../dist"]
+}

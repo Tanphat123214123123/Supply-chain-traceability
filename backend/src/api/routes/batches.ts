@@ -14,12 +14,19 @@ import {
   recallBatchSchema,
 } from '../../validation/schemas';
 
-function toCsv(rows: Record<string, unknown>[]): string {
-  if (rows.length === 0) return '';
-  const headers = Object.keys(rows[0]);
+const CSV_HEADERS = ['id', 'productName', 'productType', 'origin', 'quantity', 'unit', 'currentStage', 'isRecalled', 'createdAt'] as const;
+
+/**
+ * RFC 4180 CSV for machine consumers: CRLF record separators, every field
+ * quoted (commas, quotes and line breaks inside values stay safe), a header
+ * row even with zero data rows, and a UTF-8 BOM so spreadsheet apps detect
+ * the encoding instead of mangling Vietnamese. Timestamps are ISO 8601 UTC and
+ * numbers use "." — locale-neutral on purpose. People get .xlsx from the UI.
+ */
+export function toCsv(rows: Array<Record<(typeof CSV_HEADERS)[number], unknown>>): string {
   const escape = (v: unknown) => `"${String(v ?? '').replace(/"/g, '""')}"`;
-  const lines = [headers.join(','), ...rows.map((r) => headers.map((h) => escape(r[h])).join(','))];
-  return lines.join('\n');
+  const lines = [CSV_HEADERS.map(escape).join(','), ...rows.map((r) => CSV_HEADERS.map((h) => escape(r[h])).join(','))];
+  return '﻿' + lines.join('\r\n') + '\r\n';
 }
 
 export function batchRoutes(
@@ -69,7 +76,10 @@ export function batchRoutes(
         isRecalled: b.isRecalled,
         createdAt: b.createdAt.toISOString(),
       }));
-      res.type('text/csv').attachment('bao-cao-lo-hang.csv').send(toCsv(rows));
+      res
+        .type('text/csv; charset=utf-8; header=present')
+        .attachment(`bao-cao-lo-hang-${new Date().toISOString().slice(0, 10)}.csv`)
+        .send(toCsv(rows));
     }),
   );
 

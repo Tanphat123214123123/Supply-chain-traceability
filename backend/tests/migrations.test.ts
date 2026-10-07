@@ -123,7 +123,7 @@ describe('migrator', () => {
 
       // ── Upgrade ──
       const result = await migrate(pool);
-      expect(result.applied.map((n) => n.slice(0, 3))).toEqual(['006', '007', '008', '009']);
+      expect(result.applied.map((n) => n.slice(0, 3))).toEqual(['006', '007', '008', '009', '010']);
 
       const batch = await pool.query('SELECT head_hash, event_count FROM batches WHERE id = $1', [batchId]);
       expect(batch.rows[0]).toEqual({ head_hash: legacy[1].hash, event_count: 2 });

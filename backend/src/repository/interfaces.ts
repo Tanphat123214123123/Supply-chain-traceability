@@ -5,7 +5,10 @@ import {
   AnomalyListQuery,
   AuditLogEntry,
   Batch,
+  AttentionSummary,
   BatchListQuery,
+  Invitation,
+  InvitationPreview,
   PaginatedResult,
   RefreshTokenRecord,
   StatsByDay,
@@ -29,6 +32,19 @@ export interface ITenantRepo {
   findById(id: string): Promise<Tenant | null>;
   findBySlug(slug: string): Promise<Tenant | null>;
   listIds(): Promise<string[]>;
+}
+
+export interface IInvitationRepo {
+  create(invitation: Invitation, codeHash: string): Promise<Invitation>;
+  /** Pre-tenant: the still-redeemable invitation behind a code digest, or null. */
+  resolve(codeHash: string): Promise<InvitationPreview | null>;
+  /** Locks the invitation row and returns it only while it is still redeemable. */
+  findRedeemableForUpdate(id: string): Promise<Invitation | null>;
+  markUsed(id: string, actorId: string): Promise<void>;
+  /** Revokes a still-open invitation; null if it doesn't exist or was already used/revoked. */
+  revoke(id: string): Promise<Invitation | null>;
+  /** Newest first: open, used and revoked alike — the admin's full history. */
+  findRecentByTenant(tenantId: string, limit: number): Promise<Invitation[]>;
 }
 
 export interface ActorIdentity {
@@ -122,4 +138,6 @@ export interface IStatsRepo {
   eventCountByStage(tenantId: string): Promise<Partial<Record<SupplyChainStage, number>>>;
   batchesPerDay(tenantId: string, days: number): Promise<StatsByDay[]>;
   byOrigin(tenantId: string): Promise<StatsByOrigin[]>;
+  /** Non-recalled, unfinished batches with no activity for `stalledAfterDays`, plus open anomaly count. */
+  attention(tenantId: string, stalledAfterDays: number, limit: number): Promise<AttentionSummary>;
 }

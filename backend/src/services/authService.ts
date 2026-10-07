@@ -1,11 +1,23 @@
 import bcrypt from 'bcryptjs';
-import { createHash, randomBytes } from 'crypto';
+import { createHash, randomBytes, randomInt } from 'crypto';
 import jwt from 'jsonwebtoken';
 import { v4 as uuidv4 } from 'uuid';
 import { Database, isUniqueViolation, isUuid } from '../db/database';
-import { Actor, ActorRole, ChangePasswordDTO, LoginDTO, RefreshTokenRecord, UpdateProfileDTO } from '../domain/types';
-import { ConflictError, NotFoundError, UnauthorizedError } from '../errors';
-import { IActorRepo, IAuditLogRepo, IRefreshTokenRepo, ITenantRepo } from '../repository/interfaces';
+import {
+  Actor,
+  ActorRole,
+  ChangePasswordDTO,
+  CreateInvitationDTO,
+  Invitation,
+  InvitationPreview,
+  LoginDTO,
+  RefreshTokenRecord,
+  RegisterWithInviteDTO,
+  RegisterWorkspaceDTO,
+  UpdateProfileDTO,
+} from '../domain/types';
+import { ConflictError, ForbiddenError, NotFoundError, UnauthorizedError } from '../errors';
+import { IActorRepo, IAuditLogRepo, IInvitationRepo, IRefreshTokenRepo, ITenantRepo } from '../repository/interfaces';
 
 export interface JwtPayload {
   actorId: string;
@@ -26,6 +38,7 @@ export interface AuthRepos {
   refreshTokenRepo: IRefreshTokenRepo;
   auditLogRepo: IAuditLogRepo;
   tenantRepo: ITenantRepo;
+  invitationRepo: IInvitationRepo;
 }
 
 export const REFRESH_TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
@@ -47,8 +60,25 @@ export function hashToken(rawToken: string): string {
   return createHash('sha256').update(rawToken).digest('hex');
 }
 
-/** Thrown internally when a brand-new tenant slug is claimed concurrently; register() retries once as a join. */
+/** Thrown internally when a brand-new tenant slug is claimed concurrently; provisionActor() retries once as a join. */
 class TenantSlugRace extends Error {}
+
+// No 0/O, 1/I/L: invite codes get read aloud and typed from paper.
+const INVITE_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
+const INVITE_CODE_LENGTH = 12; // 31^12 is about 2^59, unguessable at any request rate the API allows
+
+function newInviteCode(): string {
+  let raw = '';
+  for (let i = 0; i < INVITE_CODE_LENGTH; i++) raw += INVITE_ALPHABET[randomInt(INVITE_ALPHABET.length)];
+  return raw.match(/.{4}/g)!.join('-');
+}
+
+/** Case, spaces and dashes don't matter when a code is typed back in. */
+export function hashInviteCode(code: string): string {
+  return hashToken(code.toUpperCase().replace(/[^A-Z0-9]/g, ''));
+}
+
+type NewActorFields = Pick<Actor, 'name' | 'email' | 'passwordHash' | 'role' | 'organization' | 'tenantId'>;
 
 export class AuthService {
   constructor(
@@ -65,16 +95,18 @@ export class AuthService {
   private readonly bcryptCost: number;
 
   /**
-   * Workspace-slug model (like Slack): joining an existing `tenantSlug` uses
-   * the caller's chosen role (still gated by SELF_REGISTERABLE_ROLES upstream
-   * in validation); creating a brand-new tenant makes this actor its ADMIN
-   * regardless of the role they picked, since every tenant needs at least one
-   * admin and nobody else could grant it to them yet.
+   * Trusted, server-side provisioning (demo seeding, tests) — NOT reachable
+   * over HTTP, because it lets the caller pick both tenant and role. Public
+   * sign-up goes through registerWorkspace / registerWithInvite instead.
+   *
+   * Joining an existing `tenantSlug` uses the given role; creating a
+   * brand-new tenant makes this actor its ADMIN regardless, since every
+   * tenant needs at least one admin.
    *
    * The tenant row and its first actor are created in ONE transaction: if the
    * actor insert fails (e.g. the email is taken), no orphan tenant is left.
    */
-  async register(
+  async provisionActor(
     name: string,
     email: string,
     password: string,
@@ -88,7 +120,7 @@ export class AuthService {
 
     for (let attempt = 0; ; attempt++) {
       try {
-        return await this.registerOnce(name, email, passwordHash, role, organization, tenantSlug, tenantName);
+        return await this.provisionOnce(name, email, passwordHash, role, organization, tenantSlug, tenantName);
       } catch (err) {
         if (err instanceof TenantSlugRace && attempt === 0) continue;
         throw err;
@@ -96,7 +128,7 @@ export class AuthService {
     }
   }
 
-  private async registerOnce(
+  private async provisionOnce(
     name: string,
     email: string,
     passwordHash: string,
@@ -121,26 +153,153 @@ export class AuthService {
         isNewTenant = true;
       }
 
-      const actor: Actor = {
-        id: uuidv4(),
+      const actor = await this.insertActor({
         name,
         email,
         passwordHash,
         role: isNewTenant ? 'ADMIN' : role,
         organization,
         tenantId,
-        createdAt: new Date(),
-        isActive: true,
-      };
-      try {
-        await this.repos.actorRepo.create(actor);
-      } catch (err) {
-        // The pre-check above can lose a race; the unique index can't.
-        if (isUniqueViolation(err, 'idx_actors_email_lower')) throw new ConflictError('Email already registered');
-        throw err;
-      }
+      });
       await this.logAuditEvent(actor.id, tenantId, 'ACTOR_REGISTERED', { email, role: actor.role });
       return actor;
+    });
+  }
+
+  /** Must run inside the actor's tenant transaction. */
+  private async insertActor(fields: NewActorFields): Promise<Actor> {
+    const actor: Actor = { ...fields, id: uuidv4(), createdAt: new Date(), isActive: true };
+    try {
+      await this.repos.actorRepo.create(actor);
+    } catch (err) {
+      // Each register path pre-checks the email, but that can lose a race; the unique index can't.
+      if (isUniqueViolation(err, 'idx_actors_email_lower')) throw new ConflictError('Email already registered');
+      throw err;
+    }
+    return actor;
+  }
+
+  private async assertEmailAvailable(email: string): Promise<void> {
+    if (await this.repos.actorRepo.lookupByEmail(email)) throw new ConflictError('Email already registered');
+  }
+
+  /**
+   * Public sign-up, path 1: found a new workspace. The registrant becomes its
+   * ADMIN — there is no role to choose, because nobody exists yet who could
+   * have granted one. An existing slug is a conflict, never a join.
+   */
+  async registerWorkspace(dto: RegisterWorkspaceDTO): Promise<Actor> {
+    await this.assertEmailAvailable(dto.email);
+    if (await this.repos.tenantRepo.findBySlug(dto.tenantSlug)) throw new ConflictError('Workspace slug already taken');
+    const passwordHash = await bcrypt.hash(dto.password, this.bcryptCost);
+
+    const tenantId = uuidv4();
+    return this.db.withTenant(tenantId, async () => {
+      const created = await this.repos.tenantRepo.insertIfAbsent({
+        id: tenantId,
+        slug: dto.tenantSlug,
+        name: dto.tenantName,
+        createdAt: new Date(),
+      });
+      if (!created) throw new ConflictError('Workspace slug already taken');
+
+      const actor = await this.insertActor({
+        name: dto.name,
+        email: dto.email,
+        passwordHash,
+        role: 'ADMIN',
+        organization: dto.organization,
+        tenantId,
+      });
+      await this.logAuditEvent(actor.id, tenantId, 'ACTOR_REGISTERED', {
+        email: dto.email,
+        role: 'ADMIN',
+        via: 'new_workspace',
+      });
+      return actor;
+    });
+  }
+
+  /** What the sign-up form shows for a code: the workspace name and the role it grants. */
+  async previewInvitation(code: string): Promise<InvitationPreview> {
+    const preview = await this.repos.invitationRepo.resolve(hashInviteCode(code));
+    if (!preview) throw new NotFoundError('Invitation is invalid or has expired');
+    return preview;
+  }
+
+  /**
+   * Public sign-up, path 2: redeem an invitation. The role is the
+   * invitation's, and the invitation row is locked and consumed in the same
+   * transaction that creates the actor — one code, exactly one account.
+   */
+  async registerWithInvite(dto: RegisterWithInviteDTO): Promise<Actor> {
+    await this.assertEmailAvailable(dto.email);
+    const preview = await this.previewInvitation(dto.inviteCode);
+    if (preview.email && preview.email.toLowerCase() !== dto.email.toLowerCase()) {
+      throw new ForbiddenError('This invitation was issued for a different email address');
+    }
+    const passwordHash = await bcrypt.hash(dto.password, this.bcryptCost);
+
+    return this.db.withTenant(preview.tenantId, async () => {
+      const invitation = await this.repos.invitationRepo.findRedeemableForUpdate(preview.invitationId);
+      if (!invitation) throw new ConflictError('Invitation is invalid or has expired');
+
+      const actor = await this.insertActor({
+        name: dto.name,
+        email: dto.email,
+        passwordHash,
+        role: invitation.role,
+        organization: dto.organization,
+        tenantId: preview.tenantId,
+      });
+      await this.repos.invitationRepo.markUsed(invitation.id, actor.id);
+      await this.logAuditEvent(actor.id, preview.tenantId, 'ACTOR_REGISTERED', {
+        email: dto.email,
+        role: actor.role,
+        via: 'invitation',
+        invitationId: invitation.id,
+      });
+      return actor;
+    });
+  }
+
+  /** ADMIN only (route-gated). The raw code is returned exactly once — only its digest is stored. */
+  async createInvitation(admin: Actor, dto: CreateInvitationDTO): Promise<{ invitation: Invitation; code: string }> {
+    const code = newInviteCode();
+    const now = new Date();
+    const invitation = await this.db.withTenant(admin.tenantId, async () => {
+      const created = await this.repos.invitationRepo.create(
+        {
+          id: uuidv4(),
+          tenantId: admin.tenantId,
+          role: dto.role,
+          email: dto.email,
+          note: dto.note,
+          createdBy: admin.id,
+          createdAt: now,
+          expiresAt: new Date(now.getTime() + dto.expiresInDays * 24 * 60 * 60 * 1000),
+        },
+        hashInviteCode(code),
+      );
+      await this.logAuditEvent(admin.id, admin.tenantId, 'INVITATION_CREATED', {
+        invitationId: created.id,
+        role: created.role,
+      });
+      return created;
+    });
+    return { invitation, code };
+  }
+
+  async listInvitations(admin: Actor): Promise<Invitation[]> {
+    return this.db.withTenant(admin.tenantId, () => this.repos.invitationRepo.findRecentByTenant(admin.tenantId, 100));
+  }
+
+  async revokeInvitation(admin: Actor, id: string): Promise<Invitation> {
+    return this.db.withTenant(admin.tenantId, async () => {
+      const revoked = await this.repos.invitationRepo.revoke(id);
+      if (!revoked) throw new ConflictError('Invitation not found, already used or already revoked');
+      await this.logAuditEvent(admin.id, admin.tenantId, 'INVITATION_REVOKED', { invitationId: id });
+      return revoked;
     });
   }
 

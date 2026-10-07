@@ -78,6 +78,33 @@ describe('TraceService', () => {
     expect((publicTrace.batch as Record<string, unknown>).createdBy).toBeUndefined();
   });
 
+  it('publishes the journey by organization with only whitelisted event facts', async () => {
+    const t = getDb();
+    const tenant = await createTenant(t);
+    const farmer = await createActor(t, tenant, 'FARMER', { name: 'Nguyễn Văn A', organization: 'HTX Cầu Đất' });
+    const processor = await createActor(t, tenant, 'PROCESSOR');
+    const batch = await t.ctx.supplyChainService.createBatch(farmer, sampleBatch);
+    await t.ctx.supplyChainService.recordEvent(farmer, {
+      batchId: batch.id,
+      stage: 'HARVEST',
+      location: 'Cầu Đất, Lâm Đồng',
+      data: { variety: 'Arabica', harvestDate: '2026-09-30', internalPlotNo: 'L-17' },
+      assignNextTo: processor.id,
+    });
+
+    const { journey } = await t.ctx.traceService.publicTrace(batch.id);
+    expect(journey).toHaveLength(1);
+    expect(journey[0]).toMatchObject({
+      stage: 'HARVEST',
+      location: 'Cầu Đất, Lâm Đồng',
+      organization: 'HTX Cầu Đất',
+      details: { variety: 'Arabica', harvestDate: '2026-09-30' },
+    });
+    // Neither the person nor non-whitelisted internal fields leave the tenant.
+    expect(journey[0].details).not.toHaveProperty('internalPlotNo');
+    expect(JSON.stringify(journey)).not.toContain('Nguyễn Văn A');
+  });
+
   it('returns 404 for unknown or malformed ids on public routes', async () => {
     const t = getDb();
     await expect(t.ctx.traceService.publicTrace(uuidv4())).rejects.toThrow('Batch not found');

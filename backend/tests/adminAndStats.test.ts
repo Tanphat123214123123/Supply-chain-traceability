@@ -39,6 +39,7 @@ describe('StatsService (aggregated in SQL)', () => {
       recalledBatches: 1,
       totalEvents: 3,
       anomalyCount: 1,
+      openAnomalyCount: 1,
     });
 
     const byStage = await stats.byStage(farmer.tenantId);
@@ -53,6 +54,49 @@ describe('StatsService (aggregated in SQL)', () => {
       { origin: 'Lâm Đồng', batchCount: 2, anomalyCount: 0 },
       { origin: 'Đắk Lắk', batchCount: 1, anomalyCount: 1 },
     ]);
+  });
+
+  it('flags batches with no activity for days as stalled — never recalled or finished ones', async () => {
+    const t = getDb();
+    const { farmer, admin, processor } = await world(t);
+    const svc = t.ctx.supplyChainService;
+
+    const stuck = await svc.createBatch(farmer, sampleBatch);
+    await svc.recordEvent(farmer, { batchId: stuck.id, stage: 'HARVEST', location: 'x', assignNextTo: processor.id });
+    const fresh = await svc.createBatch(farmer, sampleBatch);
+    const recalled = await svc.createBatch(farmer, sampleBatch);
+    await svc.recallBatch(admin, recalled.id, 'x');
+    const untouched = await svc.createBatch(farmer, sampleBatch);
+
+    // Age everything except `fresh` past the threshold, bypassing the append-only ledger guard as the owner.
+    const client = await t.ownerPool.connect();
+    try {
+      await client.query('SET session_replication_role = replica');
+      await client.query("UPDATE trace_events SET timestamp = now() - interval '5 days'");
+      await client.query("UPDATE batches SET created_at = now() - interval '6 days' WHERE id <> $1", [fresh.id]);
+    } finally {
+      await client.query('RESET session_replication_role');
+      client.release();
+    }
+
+    const attention = await t.ctx.statsService.attention(farmer.tenantId);
+    expect(attention.stalledBatches.map((b) => b.id)).toEqual([untouched.id, stuck.id]);
+    expect(attention.stalledCount).toBe(2);
+    expect(attention.stalledBatches[1].lastEventAt).toBeInstanceOf(Date);
+  });
+
+  it('filters the batch list by current stage, with NONE for not-yet-started batches', async () => {
+    const t = getDb();
+    const { farmer, processor } = await world(t);
+    const svc = t.ctx.supplyChainService;
+    const harvested = await svc.createBatch(farmer, sampleBatch);
+    await svc.recordEvent(farmer, { batchId: harvested.id, stage: 'HARVEST', location: 'x', assignNextTo: processor.id });
+    const notStarted = await svc.createBatch(farmer, sampleBatch);
+
+    const byStage = await svc.listBatchesPage(farmer, { page: 1, pageSize: 10, stage: 'HARVEST' });
+    expect(byStage.items.map((b) => b.id)).toEqual([harvested.id]);
+    const none = await svc.listBatchesPage(farmer, { page: 1, pageSize: 10, stage: 'NONE' });
+    expect(none.items.map((b) => b.id)).toEqual([notStarted.id]);
   });
 });
 

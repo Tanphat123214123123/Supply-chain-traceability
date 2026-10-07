@@ -19,7 +19,7 @@ export interface TestDb {
   ctx: AppContext;
 }
 
-const ALL_TABLES = 'tenants, actors, batches, trace_events, anomalies, audit_logs, refresh_tokens';
+const ALL_TABLES = 'tenants, invitations, actors, batches, trace_events, anomalies, audit_logs, refresh_tokens';
 
 /**
  * Registers beforeAll/beforeEach/afterAll hooks for a test file and returns

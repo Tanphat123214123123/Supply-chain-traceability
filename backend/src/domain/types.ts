@@ -81,6 +81,8 @@ export interface Batch {
    */
   headHash: string;
   eventCount: number;
+  /** Timestamp of the most recent event, derived on read — undefined while no event exists yet. */
+  lastEventAt?: Date;
 }
 
 export interface TraceEvent {
@@ -127,11 +129,71 @@ export interface TraceResult {
   isValid: boolean;
 }
 
+/** One step of the consumer-facing journey: who (organization, never a person), where, when, and the publishable facts. */
+export interface PublicJourneyStep {
+  stage: SupplyChainStage;
+  timestamp: Date;
+  location: string;
+  organization: string;
+  /** Only the whitelisted keys of the event's `data` (see PUBLIC_EVENT_FIELDS). */
+  details: Record<string, string | number | boolean>;
+}
+
 export interface PublicTrace {
   batch: Pick<Batch, 'id' | 'productName' | 'productType' | 'origin' | 'currentStage' | 'isRecalled' | 'recallReason'>;
   stageCount: number;
   isValid: boolean;
   hasAnomalies: boolean;
+  journey: PublicJourneyStep[];
+}
+
+/**
+ * Event `data` keys that may appear on the public provenance page, per stage.
+ * Everything else an actor records (internal moisture readings, vehicle
+ * plates, package counts...) stays visible only inside the tenant.
+ * Mirrors the `public: true` flags in frontend/src/domain/stageFields.ts.
+ */
+export const PUBLIC_EVENT_FIELDS: Record<SupplyChainStage, string[]> = {
+  HARVEST: ['harvestDate', 'variety', 'cultivation'],
+  PROCESSING: ['method'],
+  QUALITY_CHECK: ['result', 'grade', 'certificateNo'],
+  PACKAGING: ['packageType', 'expiryDate'],
+  DISTRIBUTION: ['destination'],
+  RETAIL: ['storeName', 'shelfDate'],
+};
+
+/** A batch counts as stalled when nothing has happened to it for this long. */
+export const STALLED_AFTER_DAYS = 3;
+
+export interface AttentionSummary {
+  /** Oldest-first: the batches that have waited longest come first. */
+  stalledBatches: Batch[];
+  stalledCount: number;
+  openAnomalyCount: number;
+}
+
+export interface Invitation {
+  id: string;
+  tenantId: string;
+  role: ActorRole;
+  email?: string;
+  note?: string;
+  createdBy: string;
+  createdAt: Date;
+  expiresAt: Date;
+  usedAt?: Date;
+  usedBy?: string;
+  revokedAt?: Date;
+}
+
+/** What a registrant may learn about an invitation from its code alone. */
+export interface InvitationPreview {
+  invitationId: string;
+  tenantId: string;
+  tenantName: string;
+  role: ActorRole;
+  email?: string;
+  expiresAt: Date;
 }
 
 export interface LoginDTO {
@@ -139,16 +201,29 @@ export interface LoginDTO {
   password: string;
 }
 
-export interface RegisterDTO {
+interface RegisterBase {
   name: string;
   email: string;
   password: string;
-  role: ActorRole;
   organization: string;
-  /** Workspace identifier (like a Slack workspace slug) — join if it exists, create if not. */
+}
+
+/** Founds a brand-new workspace; the registrant becomes its first ADMIN. */
+export interface RegisterWorkspaceDTO extends RegisterBase {
   tenantSlug: string;
-  /** Only used when `tenantSlug` doesn't exist yet and a new tenant is created. */
-  tenantName?: string;
+  tenantName: string;
+}
+
+/** Joins an existing workspace; the role comes from the invitation, not the registrant. */
+export interface RegisterWithInviteDTO extends RegisterBase {
+  inviteCode: string;
+}
+
+export interface CreateInvitationDTO {
+  role: ActorRole;
+  email?: string;
+  note?: string;
+  expiresInDays: number;
 }
 
 export interface CreateBatchDTO {
@@ -180,6 +255,7 @@ export interface StatsOverview {
   recalledBatches: number;
   totalEvents: number;
   anomalyCount: number;
+  openAnomalyCount: number;
 }
 
 export interface StatsByStage {
@@ -220,6 +296,8 @@ export interface BatchListQuery {
   page: number;
   pageSize: number;
   search?: string;
+  /** A stage, or 'NONE' for batches with no event yet. */
+  stage?: SupplyChainStage | 'NONE';
 }
 
 export interface RefreshTokenRecord {

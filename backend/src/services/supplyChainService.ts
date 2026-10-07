@@ -1,6 +1,16 @@
 import { v4 as uuidv4 } from 'uuid';
 import { Database } from '../db/database';
-import { Actor, Anomaly, Batch, CreateBatchDTO, RecordEventDTO, ROLE_STAGES, STAGE_ORDER, TraceEvent } from '../domain/types';
+import {
+  Actor,
+  Anomaly,
+  Batch,
+  BatchListQuery,
+  CreateBatchDTO,
+  RecordEventDTO,
+  ROLE_STAGES,
+  STAGE_ORDER,
+  TraceEvent,
+} from '../domain/types';
 import { ConflictError, ForbiddenError, NotFoundError } from '../errors';
 import { computeEventHashV2, CURRENT_HASH_VERSION, newEventSalt } from '../ledger/hashChain';
 import { BatchExportFilters, IActorRepo, IAnomalyRepo, IAuditLogRepo, IBatchRepo, IEventRepo } from '../repository/interfaces';
@@ -58,7 +68,7 @@ export class SupplyChainService {
     return this.db.withTenant(tenantId, () => this.repos.batchRepo.hasAnyInTenant(tenantId));
   }
 
-  async listBatchesPage(actor: Actor, query: { page: number; pageSize: number; search?: string }) {
+  async listBatchesPage(actor: Actor, query: BatchListQuery) {
     return this.db.withTenant(actor.tenantId, () => this.repos.batchRepo.findPageByTenant(actor.tenantId, query));
   }
 

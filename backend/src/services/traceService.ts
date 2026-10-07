@@ -1,7 +1,15 @@
 import { Database } from '../db/database';
-import { Actor, Batch, PublicTrace, TraceEvent, TraceResult } from '../domain/types';
+import {
+  Actor,
+  Batch,
+  PUBLIC_EVENT_FIELDS,
+  PublicJourneyStep,
+  PublicTrace,
+  TraceEvent,
+  TraceResult,
+} from '../domain/types';
 import { ChainVerification, verifyChainDetailed, VerifyOptions } from '../ledger/hashChain';
-import { IAnomalyRepo, IBatchRepo, IEventRepo } from '../repository/interfaces';
+import { IActorRepo, IAnomalyRepo, IBatchRepo, IEventRepo } from '../repository/interfaces';
 import { NotFoundError } from './supplyChainService';
 
 export type TraceDirection = 'forward' | 'backward';
@@ -10,6 +18,17 @@ export interface TraceRepos {
   batchRepo: IBatchRepo;
   eventRepo: IEventRepo;
   anomalyRepo: IAnomalyRepo;
+  actorRepo: IActorRepo;
+}
+
+/** Only the whitelisted, scalar facts of an event may leave the tenant. */
+function publicDetails(event: TraceEvent): PublicJourneyStep['details'] {
+  const details: PublicJourneyStep['details'] = {};
+  for (const key of PUBLIC_EVENT_FIELDS[event.stage]) {
+    const value = event.data[key];
+    if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') details[key] = value;
+  }
+  return details;
 }
 
 export type PublicVerification = {
@@ -68,6 +87,21 @@ export class TraceService {
       ]);
       const { valid } = verifyChainDetailed(events, this.verifyOptions(batch));
 
+      // Organizations, never people: a consumer sees "Xưởng chế biến An Giang",
+      // not the name or email of the employee who scanned the batch in.
+      const organizations = new Map<string, string>();
+      for (const actorId of new Set(events.map((e) => e.actorId))) {
+        const actor = await this.repos.actorRepo.findById(actorId);
+        organizations.set(actorId, actor?.organization ?? '');
+      }
+      const journey: PublicJourneyStep[] = events.map((e) => ({
+        stage: e.stage,
+        timestamp: e.timestamp,
+        location: e.location,
+        organization: organizations.get(e.actorId) ?? '',
+        details: publicDetails(e),
+      }));
+
       return {
         batch: {
           id: batch.id,
@@ -80,7 +114,8 @@ export class TraceService {
         },
         stageCount: new Set(events.map((e) => e.stage)).size,
         isValid: valid,
-        hasAnomalies: anomalies.length > 0,
+        hasAnomalies: anomalies.some((a) => !a.resolved),
+        journey,
       };
     });
   }

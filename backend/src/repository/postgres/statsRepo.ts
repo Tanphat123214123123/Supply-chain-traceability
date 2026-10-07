@@ -1,6 +1,7 @@
 import { Database } from '../../db/database';
-import { StatsByDay, StatsByOrigin, StatsOverview, SupplyChainStage } from '../../domain/types';
+import { AttentionSummary, StatsByDay, StatsByOrigin, StatsOverview, STAGE_ORDER, SupplyChainStage } from '../../domain/types';
 import { IStatsRepo } from '../interfaces';
+import { BATCH_COLUMNS, BatchRow, toBatch } from './batchRepo';
 
 /** Dashboard aggregates computed by Postgres — no table is ever pulled into application memory. */
 export class PostgresStatsRepo implements IStatsRepo {
@@ -12,12 +13,14 @@ export class PostgresStatsRepo implements IStatsRepo {
       recalled_batches: string;
       total_events: string;
       anomaly_count: string;
+      open_anomaly_count: string;
     }>(
       `SELECT
          (SELECT count(*) FROM batches WHERE tenant_id = $1)                      AS total_batches,
          (SELECT count(*) FROM batches WHERE tenant_id = $1 AND is_recalled)      AS recalled_batches,
          (SELECT count(*) FROM trace_events WHERE tenant_id = $1)                 AS total_events,
-         (SELECT count(*) FROM anomalies WHERE tenant_id = $1)                    AS anomaly_count`,
+         (SELECT count(*) FROM anomalies WHERE tenant_id = $1)                    AS anomaly_count,
+         (SELECT count(*) FROM anomalies WHERE tenant_id = $1 AND NOT resolved)   AS open_anomaly_count`,
       [tenantId],
     );
     const row = result.rows[0];
@@ -29,6 +32,7 @@ export class PostgresStatsRepo implements IStatsRepo {
       recalledBatches,
       totalEvents: Number(row.total_events),
       anomalyCount: Number(row.anomaly_count),
+      openAnomalyCount: Number(row.open_anomaly_count),
     };
   }
 
@@ -57,6 +61,36 @@ export class PostgresStatsRepo implements IStatsRepo {
       [tenantId, days],
     );
     return result.rows.map((r) => ({ date: r.date, count: Number(r.count) }));
+  }
+
+  async attention(tenantId: string, stalledAfterDays: number, limit: number): Promise<AttentionSummary> {
+    // "Last activity" = newest event, or creation for a batch nobody has touched yet.
+    const lastActivity = `COALESCE((SELECT max(e.timestamp) FROM trace_events e WHERE e.batch_id = b.id), b.created_at)`;
+    const stalledWhere = `b.tenant_id = $1
+        AND NOT b.is_recalled
+        AND b.current_stage IS DISTINCT FROM $2
+        AND ${lastActivity} < now() - make_interval(days => $3)`;
+    const params = [tenantId, STAGE_ORDER[STAGE_ORDER.length - 1], stalledAfterDays];
+
+    const [stalled, counts] = await Promise.all([
+      this.db.query<BatchRow>(
+        `SELECT ${BATCH_COLUMNS} FROM batches b WHERE ${stalledWhere}
+          ORDER BY ${lastActivity} ASC, b.id
+          LIMIT $4`,
+        [...params, limit],
+      ),
+      this.db.query<{ stalled: string; open_anomalies: string }>(
+        `SELECT (SELECT count(*) FROM batches b WHERE ${stalledWhere}) AS stalled,
+                (SELECT count(*) FROM anomalies WHERE tenant_id = $1 AND NOT resolved) AS open_anomalies`,
+        params,
+      ),
+    ]);
+
+    return {
+      stalledBatches: stalled.rows.map(toBatch),
+      stalledCount: Number(counts.rows[0].stalled),
+      openAnomalyCount: Number(counts.rows[0].open_anomalies),
+    };
   }
 
   async byOrigin(tenantId: string): Promise<StatsByOrigin[]> {

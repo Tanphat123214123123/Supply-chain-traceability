@@ -30,6 +30,13 @@ export function statsRoutes(statsService: StatsService, authService: AuthService
   );
 
   router.get(
+    '/attention',
+    asyncHandler(async (req, res) => {
+      res.json(await statsService.attention(req.actor!.tenantId));
+    }),
+  );
+
+  router.get(
     '/by-origin',
     asyncHandler(async (req, res) => {
       res.json(await statsService.byOrigin(req.actor!.tenantId));

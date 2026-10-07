@@ -7,6 +7,8 @@ interface Step {
   stage: SupplyChainStage;
   location: string;
   notes?: string;
+  /** Stage-specific facts — keys follow frontend/src/domain/stageFields.ts. */
+  data?: Record<string, string | number | boolean>;
   /** Who takes custody next — omit only on the batch's last recorded step if it's the terminal RETAIL stage. */
   handOffToEmail?: string;
 }
@@ -29,17 +31,53 @@ interface SampleBatch {
 const SAMPLE_BATCHES: SampleBatch[] = [
   {
     productName: 'Cà phê Arabica',
-    productType: 'Nông sản',
+    productType: 'Cà phê',
     origin: 'Đà Lạt, Lâm Đồng',
     quantity: 500,
     unit: 'kg',
     steps: [
-      { email: 'farmer@demo.com', stage: 'HARVEST', location: 'Đà Lạt, Lâm Đồng', handOffToEmail: 'processor@demo.com' },
-      { email: 'processor@demo.com', stage: 'PROCESSING', location: 'Xưởng chế biến An Giang', notes: 'Sơ chế theo phương pháp chế biến ướt', handOffToEmail: 'inspector@demo.com' },
-      { email: 'inspector@demo.com', stage: 'QUALITY_CHECK', location: 'Trung tâm kiểm định VN', notes: 'Đạt chuẩn xuất khẩu, độ ẩm 11.5%', handOffToEmail: 'processor@demo.com' },
-      { email: 'processor@demo.com', stage: 'PACKAGING', location: 'Xưởng chế biến An Giang', handOffToEmail: 'distributor@demo.com' },
-      { email: 'distributor@demo.com', stage: 'DISTRIBUTION', location: 'Kho trung chuyển TP.HCM', handOffToEmail: 'retailer@demo.com' },
-      { email: 'retailer@demo.com', stage: 'RETAIL', location: 'Siêu thị XYZ, Quận 1' },
+      {
+        email: 'farmer@demo.com',
+        stage: 'HARVEST',
+        location: 'Đà Lạt, Lâm Đồng',
+        data: { harvestDate: '2026-09-12', variety: 'Arabica Catimor', cultivation: 'VIETGAP' },
+        handOffToEmail: 'processor@demo.com',
+      },
+      {
+        email: 'processor@demo.com',
+        stage: 'PROCESSING',
+        location: 'Xưởng chế biến An Giang',
+        notes: 'Lên men 36 giờ trước khi phơi',
+        data: { method: 'WET', moisture: 12, outputQuantity: 470 },
+        handOffToEmail: 'inspector@demo.com',
+      },
+      {
+        email: 'inspector@demo.com',
+        stage: 'QUALITY_CHECK',
+        location: 'Trung tâm kiểm định VN',
+        data: { result: 'PASS', grade: 'Loại 1 (S18)', moisture: 11.5, certificateNo: 'KĐ-2026-0912' },
+        handOffToEmail: 'processor@demo.com',
+      },
+      {
+        email: 'processor@demo.com',
+        stage: 'PACKAGING',
+        location: 'Xưởng chế biến An Giang',
+        data: { packageType: 'BAG_1KG', packageCount: 470, expiryDate: '2027-09-30' },
+        handOffToEmail: 'distributor@demo.com',
+      },
+      {
+        email: 'distributor@demo.com',
+        stage: 'DISTRIBUTION',
+        location: 'Kho trung chuyển TP.HCM',
+        data: { destination: 'Siêu thị XYZ, Quận 1', vehicle: '51C-123.45', temperature: 24 },
+        handOffToEmail: 'retailer@demo.com',
+      },
+      {
+        email: 'retailer@demo.com',
+        stage: 'RETAIL',
+        location: 'Siêu thị XYZ, Quận 1',
+        data: { storeName: 'Siêu thị XYZ Quận 1', shelfDate: '2026-10-01' },
+      },
     ],
   },
   {
@@ -51,7 +89,13 @@ const SAMPLE_BATCHES: SampleBatch[] = [
     steps: [
       { email: 'farmer@demo.com', stage: 'HARVEST', location: 'Krông Pắc, Đắk Lắk', handOffToEmail: 'processor@demo.com' },
       { email: 'processor@demo.com', stage: 'PROCESSING', location: 'Xưởng chế biến An Giang', handOffToEmail: 'inspector@demo.com' },
-      { email: 'inspector@demo.com', stage: 'QUALITY_CHECK', location: 'Trung tâm kiểm định VN', notes: 'Đạt chuẩn xuất khẩu', handOffToEmail: 'processor@demo.com' },
+      {
+        email: 'inspector@demo.com',
+        stage: 'QUALITY_CHECK',
+        location: 'Trung tâm kiểm định VN',
+        data: { result: 'PASS', grade: 'Loại 1' },
+        handOffToEmail: 'processor@demo.com',
+      },
       { email: 'processor@demo.com', stage: 'PACKAGING', location: 'Xưởng chế biến An Giang', handOffToEmail: 'distributor@demo.com' },
       { email: 'distributor@demo.com', stage: 'DISTRIBUTION', location: 'Kho trung chuyển TP.HCM', handOffToEmail: 'retailer@demo.com' },
       { email: 'retailer@demo.com', stage: 'RETAIL', location: 'Siêu thị XYZ, Quận 1' },
@@ -69,7 +113,7 @@ const SAMPLE_BATCHES: SampleBatch[] = [
   },
   {
     productName: 'Gạo ST25',
-    productType: 'Nông sản',
+    productType: 'Lúa gạo',
     origin: 'Sóc Trăng',
     quantity: 2000,
     unit: 'kg',
@@ -93,7 +137,7 @@ const SAMPLE_BATCHES: SampleBatch[] = [
   },
   {
     productName: 'Chè Tân Cương',
-    productType: 'Nông sản',
+    productType: 'Chè',
     origin: 'Tân Cương, Thái Nguyên',
     quantity: 150,
     unit: 'kg',
@@ -103,7 +147,7 @@ const SAMPLE_BATCHES: SampleBatch[] = [
   },
   {
     productName: 'Hồ tiêu Phú Quốc',
-    productType: 'Nông sản',
+    productType: 'Gia vị',
     origin: 'Phú Quốc, Kiên Giang',
     quantity: 100,
     unit: 'kg',
@@ -115,6 +159,7 @@ const SAMPLE_BATCHES: SampleBatch[] = [
         stage: 'QUALITY_CHECK',
         location: 'Trung tâm kiểm định VN',
         notes: 'Phát hiện dư lượng thuốc bảo vệ thực vật vượt ngưỡng cho phép',
+        data: { result: 'FAIL' },
         handOffToEmail: 'processor@demo.com',
       },
     ],
@@ -198,6 +243,7 @@ export async function seedSampleBatches(
         stage: step.stage,
         location: step.location,
         notes: step.notes,
+        data: step.data,
         assignNextTo,
       });
     }

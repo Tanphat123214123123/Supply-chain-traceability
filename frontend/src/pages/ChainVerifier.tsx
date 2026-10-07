@@ -1,12 +1,12 @@
-import { useState, FormEvent } from 'react'
-import { Link } from 'react-router-dom'
+import { useCallback, useEffect, useState, FormEvent } from 'react'
+import { Link, useSearchParams } from 'react-router-dom'
 import { Search, CheckCircle2, XCircle } from 'lucide-react'
 import { traceApi, ChainProblem, FullVerifyResult, STAGE_LABELS } from '../api/client'
 import Button from '../components/ui/Button'
 import { inputClass } from '../components/ui/field'
 import { cardClass } from '../components/ui/Card'
 
-type ApiErr = { response?: { data?: { error?: string } } }
+type ApiErr = { response?: { status?: number; data?: { error?: string } } }
 
 function problemMessage(result: FullVerifyResult): string {
   const at = (result.brokenAtIndex ?? 0) + 1
@@ -20,24 +20,34 @@ function problemMessage(result: FullVerifyResult): string {
 }
 
 export default function ChainVerifier() {
-  const [batchId, setBatchId] = useState('')
+  const [searchParams] = useSearchParams()
+  const [batchId, setBatchId] = useState(searchParams.get('batch') ?? '')
   const [result, setResult] = useState<FullVerifyResult | null>(null)
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
 
-  const handleSubmit = async (e: FormEvent) => {
-    e.preventDefault()
+  const verify = useCallback(async (id: string) => {
     setError('')
     setResult(null)
     setLoading(true)
     try {
-      const data = await traceApi.verifyFull(batchId.trim())
-      setResult(data)
+      setResult(await traceApi.verifyFull(id.trim()))
     } catch (err) {
-      setError((err as ApiErr)?.response?.data?.error ?? 'Không tìm thấy lô hàng')
+      setError((err as ApiErr)?.response?.status === 404 || !(err as ApiErr)?.response ? 'Không tìm thấy lô hàng' : 'Không xác minh được, thử lại sau')
     } finally {
       setLoading(false)
     }
+  }, [])
+
+  // Linked from the public provenance page (/verify?batch=<id>): run straight away.
+  useEffect(() => {
+    const fromLink = searchParams.get('batch')
+    if (fromLink) verify(fromLink)
+  }, [searchParams, verify])
+
+  const handleSubmit = (e: FormEvent) => {
+    e.preventDefault()
+    verify(batchId)
   }
 
   return (

@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { CheckCircle2 } from 'lucide-react'
-import { adminApi, Anomaly, AnomalySeverity } from '../api/client'
+import { adminApi, Anomaly, AnomalySeverity, ANOMALY_TYPE_LABELS, SEVERITY_LABELS } from '../api/client'
+import { apiErrorMessage } from '../lib/apiError'
 import PageHeader from '../components/ui/PageHeader'
 import Badge, { BadgeTone } from '../components/ui/Badge'
 import EmptyState from '../components/ui/EmptyState'
@@ -21,6 +22,7 @@ export default function AnomalyMonitor() {
   const [filter, setFilter] = useState<'all' | 'unresolved' | 'resolved'>('unresolved')
   const [loading, setLoading] = useState(true)
   const [resolvingId, setResolvingId] = useState<string | null>(null)
+  const [actionError, setActionError] = useState('')
 
   const load = () => {
     setLoading(true)
@@ -40,11 +42,12 @@ export default function AnomalyMonitor() {
 
   const handleResolve = async (id: string) => {
     setResolvingId(id)
+    setActionError('')
     try {
       await adminApi.resolveAnomaly(id)
       load()
-    } catch {
-      window.alert('Không thể duyệt bất thường này')
+    } catch (err) {
+      setActionError(apiErrorMessage(err, 'Không thể đánh dấu cảnh báo này là đã xử lý.'))
     } finally {
       setResolvingId(null)
     }
@@ -72,6 +75,12 @@ export default function AnomalyMonitor() {
           ))}
         </div>
 
+        {actionError && (
+          <p role="alert" className="text-sm text-rose-600 dark:text-rose-400">
+            {actionError}
+          </p>
+        )}
+
         {loading && <SkeletonCardList rows={3} />}
         {!loading && items.length === 0 && (
           <EmptyState icon={<CheckCircle2 className="w-6 h-6" />} title="Không có bất thường nào ở bộ lọc này" />
@@ -83,8 +92,8 @@ export default function AnomalyMonitor() {
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2 mb-1.5">
-                    <Badge tone={SEVERITY_TONE[a.severity]}>{a.severity}</Badge>
-                    <span className="text-xs text-slate-400 dark:text-slate-500">{a.type}</span>
+                    <Badge tone={SEVERITY_TONE[a.severity]}>{SEVERITY_LABELS[a.severity]}</Badge>
+                    <span className="text-xs text-slate-500 dark:text-slate-400">{ANOMALY_TYPE_LABELS[a.type]}</span>
                   </div>
                   <p className="text-sm text-slate-700 dark:text-slate-300">{a.message}</p>
                   <Link to={`/batch/${a.batchId}`} className="text-xs text-brand-600 dark:text-brand-400 hover:underline font-medium">

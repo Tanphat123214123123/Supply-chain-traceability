@@ -8,16 +8,8 @@ import Badge from '../components/ui/Badge'
 import Button from '../components/ui/Button'
 import { inputClass } from '../components/ui/field'
 import { cardClass } from '../components/ui/Card'
-
-function downloadCsv(filename: string, content: string) {
-  const blob = new Blob([content], { type: 'text/csv' })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = filename
-  a.click()
-  URL.revokeObjectURL(url)
-}
+import { apiErrorMessage } from '../lib/apiError'
+import { downloadBlob, MIME } from '../lib/reports/download'
 
 export default function Reports() {
   const [overview, setOverview] = useState<StatsOverview | null>(null)
@@ -28,6 +20,7 @@ export default function Reports() {
   const [to, setTo] = useState('')
   const [origin, setOrigin] = useState('')
   const [exporting, setExporting] = useState(false)
+  const [exportError, setExportError] = useState('')
 
   useEffect(() => {
     statsApi.overview().then(setOverview).catch(() => {})
@@ -38,11 +31,20 @@ export default function Reports() {
 
   const handleExport = async () => {
     setExporting(true)
+    setExportError('')
     try {
-      const csv = await batchApi.exportCsv({ from: from || undefined, to: to || undefined, origin: origin || undefined })
-      downloadCsv('bao-cao-lo-hang.csv', csv)
-    } catch {
-      window.alert('Xuất báo cáo thất bại')
+      // Whole local days: "đến ngày 04/10" must include everything created on the 4th.
+      const batches = await batchApi.exportJson({
+        from: from ? new Date(`${from}T00:00:00`).toISOString() : undefined,
+        to: to ? new Date(`${to}T23:59:59.999`).toISOString() : undefined,
+        origin: origin.trim() || undefined,
+      })
+      const { buildBatchListXlsx } = await import('../lib/reports/xlsx')
+      const blob = await buildBatchListXlsx(batches, { from, to, origin: origin.trim() })
+      const stamp = new Date().toISOString().slice(0, 10)
+      downloadBlob(`bao-cao-lo-hang-${stamp}.xlsx`, blob, MIME.xlsx)
+    } catch (err) {
+      setExportError(apiErrorMessage(err, 'Xuất báo cáo thất bại. Thử lại sau.'))
     } finally {
       setExporting(false)
     }
@@ -56,7 +58,7 @@ export default function Reports() {
         {overview && (
           <>
             {(() => {
-              const isHealthy = overview.recalledBatches === 0 && overview.anomalyCount === 0
+              const isHealthy = overview.recalledBatches === 0 && overview.openAnomalyCount === 0
               return (
                 <div
                   className={cardClass({
@@ -90,7 +92,7 @@ export default function Reports() {
                   {!isHealthy && (
                     <div className="flex items-center gap-2 flex-wrap">
                       {overview.recalledBatches > 0 && <Badge tone="danger">{overview.recalledBatches} đã thu hồi</Badge>}
-                      {overview.anomalyCount > 0 && <Badge tone="warning">{overview.anomalyCount} bất thường</Badge>}
+                      {overview.openAnomalyCount > 0 && <Badge tone="warning">{overview.openAnomalyCount} bất thường chưa xử lý</Badge>}
                     </div>
                   )}
                 </div>
@@ -102,7 +104,7 @@ export default function Reports() {
               <StatCard label="Đang hoạt động" value={overview.activeBatches} tone="success" icon={<Activity className="w-5 h-5" />} />
               <StatCard label="Đã thu hồi" value={overview.recalledBatches} tone="danger" icon={<Siren className="w-5 h-5" />} />
               <StatCard label="Tổng sự kiện" value={overview.totalEvents} tone="brand" icon={<FileText className="w-5 h-5" />} />
-              <StatCard label="Bất thường" value={overview.anomalyCount} tone="warning" icon={<AlertTriangle className="w-5 h-5" />} />
+              <StatCard label="Bất thường chưa xử lý" value={overview.openAnomalyCount} tone="warning" icon={<AlertTriangle className="w-5 h-5" />} />
             </div>
           </>
         )}
@@ -165,8 +167,13 @@ export default function Reports() {
             </div>
           </div>
           <Button type="button" disabled={exporting} onClick={handleExport} size="sm">
-            {exporting ? 'Đang xuất...' : 'Xuất CSV'}
+            {exporting ? 'Đang tạo file...' : 'Xuất Excel (.xlsx)'}
           </Button>
+          {exportError && (
+            <p role="alert" className="text-sm text-rose-600 dark:text-rose-400 mt-2">
+              {exportError}
+            </p>
+          )}
         </div>
       </main>
     </div>

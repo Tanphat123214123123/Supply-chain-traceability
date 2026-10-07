@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { LayoutGrid, List } from 'lucide-react'
 import { useAuth } from '../context/AuthContext'
 import { actorsApi, Actor, ActorRole, PartnerSummary, ROLE_LABELS } from '../api/client'
@@ -7,6 +7,8 @@ import PageHeader from '../components/ui/PageHeader'
 import Badge, { BadgeTone } from '../components/ui/Badge'
 import { cardClass } from '../components/ui/Card'
 import { SkeletonCardList } from '../components/ui/Skeleton'
+import InvitePanel from '../components/InvitePanel'
+import { apiErrorMessage } from '../lib/apiError'
 
 const ROLE_TONE: Record<ActorRole, BadgeTone> = {
   FARMER: 'success',
@@ -24,7 +26,10 @@ export default function Actors() {
   const [loading, setLoading] = useState(true)
   const [busyId, setBusyId] = useState<string | null>(null)
   const [view, setView] = useState<'list' | 'grid'>('list')
+  const [actionError, setActionError] = useState('')
+  const [searchParams] = useSearchParams()
   const isAdmin = hasRole('ADMIN')
+  const welcome = searchParams.get('welcome') === '1' && isAdmin
 
   const load = () => {
     setLoading(true)
@@ -42,11 +47,12 @@ export default function Actors() {
 
   const toggleStatus = async (target: Actor) => {
     setBusyId(target.id)
+    setActionError('')
     try {
       await actorsApi.setStatus(target.id, !target.isActive)
       load()
-    } catch {
-      window.alert('Không thể cập nhật trạng thái')
+    } catch (err) {
+      setActionError(apiErrorMessage(err, 'Không thể cập nhật trạng thái tài khoản.'))
     } finally {
       setBusyId(null)
     }
@@ -56,6 +62,24 @@ export default function Actors() {
     <div className="page-shell">
       <main className="max-w-3xl mx-auto p-4 sm:p-6 space-y-4">
         <PageHeader title="Đối tác trong chuỗi cung ứng" subtitle="Toàn bộ tổ chức và tài khoản đang tham gia mạng lưới." />
+
+        {welcome && (
+          <div className="bg-brand-50 dark:bg-brand-500/10 border border-brand-100 dark:border-brand-500/20 rounded-2xl p-4 text-sm text-brand-800 dark:text-brand-300">
+            <p className="font-semibold">Không gian làm việc đã sẵn sàng.</p>
+            <p className="mt-1">
+              Bước tiếp theo: mời các đối tác trong chuỗi — nông hộ, nhà chế biến, kiểm định, phân phối, bán lẻ. Mỗi người nhận một mã mời
+              gắn sẵn vai trò.
+            </p>
+          </div>
+        )}
+
+        {isAdmin && <InvitePanel />}
+
+        {actionError && (
+          <p role="alert" className="text-sm text-rose-600 dark:text-rose-400">
+            {actionError}
+          </p>
+        )}
 
         <div className={cardClass()}>
           <h2 className="text-sm font-semibold text-slate-700 dark:text-slate-300 mb-3">Theo tổ chức</h2>

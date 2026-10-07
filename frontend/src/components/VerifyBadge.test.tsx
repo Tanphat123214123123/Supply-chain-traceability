@@ -15,7 +15,7 @@ describe('VerifyBadge', () => {
 
   it('shows the verified state when valid and no anomalies', () => {
     render(<VerifyBadge isValid hasAnomalies={false} />)
-    expect(screen.getByText(/Đã xác thực/)).toBeInTheDocument()
+    expect(screen.getByText(/Dữ liệu nguyên vẹn/)).toBeInTheDocument()
   })
 
   it('prioritizes the tampered state even when anomalies are also present', () => {

@@ -1,3 +1,4 @@
+import { ShieldAlert, ShieldCheck, TriangleAlert } from 'lucide-react'
 import Badge from './ui/Badge'
 
 interface Props {
@@ -5,14 +6,31 @@ interface Props {
   hasAnomalies: boolean
 }
 
+/**
+ * What the hash chain can actually prove: that recorded data hasn't been
+ * edited or deleted since — not that it was true when entered. The wording
+ * stays within that claim.
+ */
 export default function VerifyBadge({ isValid, hasAnomalies }: Props) {
   if (!isValid) {
-    return <Badge tone="danger">🚨 Chuỗi bị can thiệp</Badge>
+    return (
+      <Badge tone="danger">
+        <ShieldAlert className="w-3.5 h-3.5" /> Chuỗi bị can thiệp
+      </Badge>
+    )
   }
   if (hasAnomalies) {
-    // Not "⚠ ..." — that glyph renders oversized in some browsers' emoji
-    // fallback font and visually bleeds outside this badge's tight line-height.
-    return <Badge tone="warning">Có bất thường</Badge>
+    return (
+      <Badge tone="warning">
+        <TriangleAlert className="w-3.5 h-3.5" /> Có bất thường
+      </Badge>
+    )
   }
-  return <Badge tone="success">✓ Đã xác thực</Badge>
+  return (
+    <span title="Dữ liệu chưa bị sửa hoặc xoá kể từ khi được ghi">
+      <Badge tone="success">
+        <ShieldCheck className="w-3.5 h-3.5" /> Dữ liệu nguyên vẹn
+      </Badge>
+    </span>
+  )
 }

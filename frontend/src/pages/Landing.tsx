@@ -104,7 +104,7 @@ export default function Landing() {
           </p>
 
           <div className="mt-8 flex items-center justify-center gap-3 flex-wrap animate-slide-up [animation-delay:240ms]">
-            <Link to="/register" className={buttonClass('primary', 'lg', 'shadow-glow')}>
+            <Link to="/register?mode=workspace" className={buttonClass('primary', 'lg', 'shadow-glow')}>
               Bắt đầu miễn phí →
             </Link>
             <Link to="/how-it-works" className={buttonClass('secondary', 'lg')}>
@@ -183,11 +183,14 @@ export default function Landing() {
           Sẵn sàng làm cho chuỗi cung ứng của bạn minh bạch?
         </h2>
         <p className="mt-4 text-slate-500 dark:text-slate-400 max-w-lg mx-auto">
-          Tạo tài khoản trong chưa đầy một phút — không cần thẻ tín dụng, không ràng buộc.
+          Tạo không gian cho đơn vị của bạn trong chưa đầy một phút, rồi mời đối tác bằng mã mời.
         </p>
         <div className="mt-8 flex items-center justify-center gap-3 flex-wrap">
-          <Link to="/register" className={buttonClass('primary', 'lg', 'shadow-glow')}>
-            Đăng ký ngay
+          <Link to="/register?mode=workspace" className={buttonClass('primary', 'lg', 'shadow-glow')}>
+            Tạo không gian làm việc
+          </Link>
+          <Link to="/register" className={buttonClass('secondary', 'lg')}>
+            Tôi có mã mời
           </Link>
           <Link to="/login" className={buttonClass('secondary', 'lg')}>
             Tôi đã có tài khoản

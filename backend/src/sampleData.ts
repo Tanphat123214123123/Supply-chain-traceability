@@ -1,5 +1,4 @@
 import { Actor, SupplyChainStage } from './domain/types';
-import { IActorRepo } from './repository/interfaces';
 import { SupplyChainService } from './services/supplyChainService';
 
 interface Step {
@@ -156,15 +155,24 @@ const ANOMALY_BATCHES: Array<{
   },
 ];
 
-/** Seeds realistic sample batches for the demo accounts — idempotent, and only ever fills an empty store. */
-export async function seedSampleBatches(supplyChainService: SupplyChainService, actorRepo: IActorRepo): Promise<void> {
-  if (await supplyChainService.hasAnyBatches()) return;
+/**
+ * Seeds realistic sample batches for the demo accounts — idempotent: it only
+ * ever fills a demo tenant that has no batches yet.
+ *
+ * `findActorByEmail` resolves an already-seeded demo account (see bootstrap.ts).
+ */
+export async function seedSampleBatches(
+  supplyChainService: SupplyChainService,
+  demoTenantId: string,
+  findActorByEmail: (email: string) => Promise<Actor | null>,
+): Promise<void> {
+  if (await supplyChainService.tenantHasBatches(demoTenantId)) return;
 
   const actorByEmail = new Map<string, Actor>();
   async function actorFor(email: string): Promise<Actor> {
     let found = actorByEmail.get(email);
     if (!found) {
-      const fetched = await actorRepo.findByEmail(email);
+      const fetched = await findActorByEmail(email);
       if (!fetched) throw new Error(`Sample data expects demo account ${email} to already be seeded`);
       found = fetched;
       actorByEmail.set(email, found);

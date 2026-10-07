@@ -1,22 +1,43 @@
-version: '3.9'
-
 services:
   postgres:
     image: postgres:16-alpine
     environment:
       POSTGRES_DB: tracechain
+      # Schema owner — used ONLY by the one-shot `migrate` service below.
       POSTGRES_USER: tracechain
       POSTGRES_PASSWORD: tracechain_dev
+    # Bound to localhost only: reachable from your machine (psql, IDE), not from your network.
+    # Host port 55432 (not 5432) so it never collides with a PostgreSQL installed
+    # natively on the machine; override with POSTGRES_HOST_PORT. Containers talk
+    # to each other on postgres:5432 regardless.
     ports:
-      - "5432:5432"
+      - "127.0.0.1:${POSTGRES_HOST_PORT:-55432}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./backend/migrations:/docker-entrypoint-initdb.d
+    # No docker-entrypoint-initdb.d mount any more: that only ever ran on an
+    # empty volume, so new migrations silently never reached existing data.
+    # Schema changes are applied by the `migrate` service on every `up`.
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U tracechain"]
-      interval: 10s
+      test: ["CMD-SHELL", "pg_isready -U tracechain -d tracechain"]
+      interval: 5s
       timeout: 5s
-      retries: 5
+      retries: 10
+
+  # Applies pending migrations (tracked in schema_migrations, checksummed,
+  # advisory-locked) as the schema owner, then gives the least-privilege
+  # runtime role `tracechain_app` its login password. Exits when done.
+  migrate:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    command: ["node", "dist/db/migrate.js"]
+    environment:
+      MIGRATION_DATABASE_URL: postgres://tracechain:tracechain_dev@postgres:5432/tracechain
+      APP_DB_PASSWORD: tracechain_app_dev
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
 
   backend:
     build:
@@ -29,13 +50,22 @@ services:
       # Dev-only placeholders — real deployments must inject their own via
       # secrets/env, never commit an actual value here.
       JWT_SECRET: dev-only-jwt-secret-do-not-use-in-production
+      # Only needed to re-verify events recorded before hash v2 (legacy HMAC).
+      # Keep it while such events exist in the database.
       LEDGER_SIGNING_KEY: dev-only-ledger-signing-key-do-not-use-in-production
-      DATABASE_URL: postgres://tracechain:tracechain_dev@postgres:5432/tracechain
+      # The API runs as tracechain_app: no DDL, no UPDATE/DELETE on the ledger,
+      # row-level security enforced. Never point it at the owner account.
+      DATABASE_URL: postgres://tracechain_app:tracechain_app_dev@postgres:5432/tracechain
       NODE_ENV: development
       PUBLIC_ORIGIN: http://localhost:5173
     depends_on:
-      postgres:
-        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/health >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
     develop:
       watch:
         - action: sync+restart

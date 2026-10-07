@@ -1,7 +1,6 @@
 import { Router } from 'express';
 import { rateLimit } from 'express-rate-limit';
 import { z } from 'zod';
-import { IActorRepo } from '../../repository/interfaces';
 import { AuthService, REFRESH_TOKEN_TTL_MS } from '../../services/authService';
 import { UnauthorizedError } from '../../errors';
 import { requireAuth } from '../middleware/auth';
@@ -22,7 +21,7 @@ function refreshCookieOptions() {
   };
 }
 
-export function authRoutes(authService: AuthService, actorRepo: IActorRepo): Router {
+export function authRoutes(authService: AuthService): Router {
   const router = Router();
 
   // Login attempts are far more brute-forceable than the rest of the API, so
@@ -90,7 +89,7 @@ export function authRoutes(authService: AuthService, actorRepo: IActorRepo): Rou
     }),
   );
 
-  const authed = requireAuth(authService, actorRepo);
+  const authed = requireAuth(authService);
 
   router.get(
     '/me',
@@ -106,7 +105,7 @@ export function authRoutes(authService: AuthService, actorRepo: IActorRepo): Rou
     authed,
     validateBody(updateProfileSchema),
     asyncHandler(async (req, res) => {
-      const updated = await authService.updateProfile(req.actor!.id, req.body as z.infer<typeof updateProfileSchema>);
+      const updated = await authService.updateProfile(req.actor!, req.body as z.infer<typeof updateProfileSchema>);
       const { passwordHash: _omit, ...actorPublic } = updated;
       res.json(actorPublic);
     }),
@@ -117,7 +116,7 @@ export function authRoutes(authService: AuthService, actorRepo: IActorRepo): Rou
     authed,
     validateBody(changePasswordSchema),
     asyncHandler(async (req, res) => {
-      await authService.changePassword(req.actor!.id, req.body as z.infer<typeof changePasswordSchema>);
+      await authService.changePassword(req.actor!, req.body as z.infer<typeof changePasswordSchema>);
       res.status(204).send();
     }),
   );
@@ -126,7 +125,7 @@ export function authRoutes(authService: AuthService, actorRepo: IActorRepo): Rou
     '/sessions',
     authed,
     asyncHandler(async (req, res) => {
-      const sessions = await authService.listSessions(req.actor!.id);
+      const sessions = await authService.listSessions(req.actor!);
       res.json(sessions.map((s) => ({ token: s.token.slice(0, 8), expiresAt: s.expiresAt, createdAt: s.createdAt })));
     }),
   );
@@ -135,9 +134,7 @@ export function authRoutes(authService: AuthService, actorRepo: IActorRepo): Rou
     '/sessions/:tokenPrefix',
     authed,
     asyncHandler(async (req, res) => {
-      const sessions = await authService.listSessions(req.actor!.id);
-      const full = sessions.find((s) => s.token.startsWith(req.params.tokenPrefix));
-      if (full) await authService.revokeSession(req.actor!.id, full.token);
+      await authService.revokeSession(req.actor!, req.params.tokenPrefix);
       res.status(204).send();
     }),
   );

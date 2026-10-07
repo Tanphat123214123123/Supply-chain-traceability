@@ -199,6 +199,9 @@ export interface Batch {
   metadata: Record<string, unknown>
   /** Who's currently authorized to record the batch's next event — undefined means unclaimed. */
   assignedToActorId?: string
+  /** Head of the batch's hash chain as recorded by the database (last event hash / event count). */
+  headHash: string
+  eventCount: number
 }
 
 export interface TraceEvent {
@@ -213,6 +216,10 @@ export interface TraceEvent {
   hash: string
   prevHash: string
   sequenceNumber: number
+  /** 1 = legacy HMAC (server-verifiable only), 2 = public salted SHA-256 over RFC 8785 JSON. */
+  hashVersion: 1 | 2
+  /** Per-event random salt — part of the v2 hash preimage, absent on v1 events. */
+  salt?: string
 }
 
 export type AnomalyType = 'STAGE_SKIPPED' | 'DUPLICATE_STAGE' | 'OUT_OF_ORDER' | 'CHAIN_TAMPERED'
@@ -296,10 +303,25 @@ export interface NotificationItem {
   createdAt: string
 }
 
+export type ChainProblem = 'TAMPERED_EVENT' | 'BROKEN_LINK' | 'HEAD_MISMATCH' | 'UNVERIFIABLE_LEGACY'
+
 export interface ChainVerification {
   valid: boolean
   brokenAtIndex?: number
-  perEvent: Array<{ eventId: string; recomputedHash: string; matchesStoredHash: boolean; linksToPrevious: boolean }>
+  problem?: ChainProblem
+  /** Whether the chain ends exactly at the head the database recorded (catches a deleted tail). */
+  headMatches: boolean | null
+  legacyEventCount: number
+  perEvent: Array<{
+    eventId: string
+    sequenceNumber: number
+    hashVersion: 1 | 2
+    /** null when the server can't recompute it (legacy v1 event without its key). */
+    recomputedHash: string | null
+    matchesStoredHash: boolean
+    linksToPrevious: boolean
+    publiclyVerifiable: boolean
+  }>
 }
 
 export interface FullVerifyResult extends ChainVerification {

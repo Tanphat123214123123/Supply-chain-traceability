@@ -1,6 +1,5 @@
 import { Router } from 'express';
 import { z } from 'zod';
-import { IActorRepo } from '../../repository/interfaces';
 import { AdminService } from '../../services/adminService';
 import { AuthService } from '../../services/authService';
 import { requireAuth, requireRole } from '../middleware/auth';
@@ -13,9 +12,9 @@ import { setActorRoleSchema, setActorStatusSchema } from '../../validation/schem
  * organizations participate in the chain is part of traceability itself.
  * Only ADMIN can change status/role, gated per-route below.
  */
-export function actorsRoutes(adminService: AdminService, authService: AuthService, actorRepo: IActorRepo): Router {
+export function actorsRoutes(adminService: AdminService, authService: AuthService): Router {
   const router = Router();
-  router.use(requireAuth(authService, actorRepo));
+  router.use(requireAuth(authService));
 
   router.get(
     '/',
@@ -27,7 +26,7 @@ export function actorsRoutes(adminService: AdminService, authService: AuthServic
   router.get(
     '/partners',
     asyncHandler(async (req, res) => {
-      res.json(await adminService.listPartners(req.actor!.tenantId));
+      res.json(await adminService.listPartners(req.actor!));
     }),
   );
 

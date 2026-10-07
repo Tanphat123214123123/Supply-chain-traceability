@@ -1,6 +1,6 @@
-import { Pool } from 'pg';
+import { Database, isUuid } from '../../db/database';
 import { Actor, ActorRole } from '../../domain/types';
-import { IActorRepo } from '../interfaces';
+import { ActorIdentity, IActorRepo } from '../interfaces';
 
 interface ActorRow {
   id: string;
@@ -13,6 +13,8 @@ interface ActorRow {
   created_at: Date;
   is_active: boolean;
 }
+
+const COLUMNS = 'id, name, email, password_hash, role, organization, tenant_id, created_at, is_active';
 
 function toActor(row: ActorRow): Actor {
   return {
@@ -29,10 +31,10 @@ function toActor(row: ActorRow): Actor {
 }
 
 export class PostgresActorRepo implements IActorRepo {
-  constructor(private readonly pool: Pool) {}
+  constructor(private readonly db: Database) {}
 
   async create(actor: Actor): Promise<Actor> {
-    await this.pool.query(
+    await this.db.query(
       `INSERT INTO actors (id, name, email, password_hash, role, organization, tenant_id, created_at, is_active)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
       [
@@ -51,28 +53,53 @@ export class PostgresActorRepo implements IActorRepo {
   }
 
   async findById(id: string): Promise<Actor | null> {
-    const result = await this.pool.query<ActorRow>('SELECT * FROM actors WHERE id = $1', [id]);
-    return result.rows[0] ? toActor(result.rows[0]) : null;
-  }
-
-  async findByEmail(email: string): Promise<Actor | null> {
-    const result = await this.pool.query<ActorRow>('SELECT * FROM actors WHERE lower(email) = lower($1)', [email]);
+    if (!isUuid(id)) return null;
+    const result = await this.db.query<ActorRow>(`SELECT ${COLUMNS} FROM actors WHERE id = $1`, [id]);
     return result.rows[0] ? toActor(result.rows[0]) : null;
   }
 
   async findAllByTenant(tenantId: string): Promise<Actor[]> {
-    const result = await this.pool.query<ActorRow>(
-      'SELECT * FROM actors WHERE tenant_id = $1 ORDER BY name ASC',
+    const result = await this.db.query<ActorRow>(
+      `SELECT ${COLUMNS} FROM actors WHERE tenant_id = $1 ORDER BY name ASC, id ASC`,
       [tenantId],
     );
     return result.rows.map(toActor);
   }
 
-  async update(actor: Actor): Promise<Actor> {
-    await this.pool.query(
-      `UPDATE actors SET name = $2, organization = $3, role = $4, is_active = $5, password_hash = $6 WHERE id = $1`,
-      [actor.id, actor.name, actor.organization, actor.role, actor.isActive, actor.passwordHash],
+  async lookupByEmail(email: string): Promise<ActorIdentity | null> {
+    const result = await this.db.query<{ actor_id: string; tenant_id: string }>(
+      'SELECT actor_id, tenant_id FROM auth_lookup_actor($1)',
+      [email],
     );
-    return actor;
+    const row = result.rows[0];
+    return row ? { actorId: row.actor_id, tenantId: row.tenant_id } : null;
+  }
+
+  async updateProfile(id: string, changes: { name: string; organization: string }): Promise<Actor | null> {
+    const result = await this.db.query<ActorRow>(
+      `UPDATE actors SET name = $2, organization = $3 WHERE id = $1 RETURNING ${COLUMNS}`,
+      [id, changes.name, changes.organization],
+    );
+    return result.rows[0] ? toActor(result.rows[0]) : null;
+  }
+
+  async setActive(id: string, isActive: boolean): Promise<Actor | null> {
+    const result = await this.db.query<ActorRow>(
+      `UPDATE actors SET is_active = $2 WHERE id = $1 RETURNING ${COLUMNS}`,
+      [id, isActive],
+    );
+    return result.rows[0] ? toActor(result.rows[0]) : null;
+  }
+
+  async setRole(id: string, role: ActorRole): Promise<Actor | null> {
+    const result = await this.db.query<ActorRow>(`UPDATE actors SET role = $2 WHERE id = $1 RETURNING ${COLUMNS}`, [
+      id,
+      role,
+    ]);
+    return result.rows[0] ? toActor(result.rows[0]) : null;
+  }
+
+  async setPasswordHash(id: string, passwordHash: string): Promise<void> {
+    await this.db.query('UPDATE actors SET password_hash = $2 WHERE id = $1', [id, passwordHash]);
   }
 }

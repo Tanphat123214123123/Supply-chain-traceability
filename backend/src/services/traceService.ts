@@ -1,78 +1,103 @@
+import { Database } from '../db/database';
 import { Actor, Batch, PublicTrace, TraceEvent, TraceResult } from '../domain/types';
-import { ChainVerification, verifyChain, verifyChainDetailed } from '../ledger/hashChain';
+import { ChainVerification, verifyChainDetailed, VerifyOptions } from '../ledger/hashChain';
 import { IAnomalyRepo, IBatchRepo, IEventRepo } from '../repository/interfaces';
 import { NotFoundError } from './supplyChainService';
 
 export type TraceDirection = 'forward' | 'backward';
 
+export interface TraceRepos {
+  batchRepo: IBatchRepo;
+  eventRepo: IEventRepo;
+  anomalyRepo: IAnomalyRepo;
+}
+
+export type PublicVerification = {
+  batch: Pick<Batch, 'id' | 'productName'>;
+  events: Omit<TraceEvent, 'tenantId'>[];
+} & ChainVerification;
+
 export class TraceService {
   constructor(
-    private readonly batchRepo: IBatchRepo,
-    private readonly eventRepo: IEventRepo,
-    private readonly anomalyRepo: IAnomalyRepo,
-    private readonly signingKey: string,
+    private readonly db: Database,
+    private readonly repos: TraceRepos,
+    /** Only needed to re-verify legacy v1 (HMAC) events; v2 events need no secret at all. */
+    private readonly legacyLedgerKey?: string,
   ) {}
 
+  private verifyOptions(batch: Batch): VerifyOptions {
+    return { legacyKey: this.legacyLedgerKey, head: { hash: batch.headHash, eventCount: batch.eventCount } };
+  }
+
+  async trace(batchId: string, direction: TraceDirection, requester: Actor): Promise<TraceResult> {
+    return this.db.withTenant(requester.tenantId, async () => {
+      const batch = await this.repos.batchRepo.findById(batchId);
+      if (!batch || batch.tenantId !== requester.tenantId) throw new NotFoundError('Batch not found');
+
+      const [ascending, anomalies] = await Promise.all([
+        this.repos.eventRepo.findByBatchId(batchId),
+        this.repos.anomalyRepo.findByBatchId(batchId),
+      ]);
+      const { valid } = verifyChainDetailed(ascending, this.verifyOptions(batch));
+      const events = direction === 'backward' ? [...ascending].reverse() : ascending;
+      return { batch, events, anomalies, isValid: valid };
+    });
+  }
+
   /**
-   * `requester` is optional so this stays callable from tests/tools without a
-   * full auth context — the authenticated `/trace/:batchId` route always
-   * passes it, which is what actually enforces the tenant boundary.
+   * Public lookups arrive with only a batch id (from a QR code), so the
+   * owning tenant is resolved first through a SECURITY DEFINER function that
+   * reveals nothing but that id — everything after runs in a normal
+   * tenant-scoped transaction under row-level security.
    */
-  async trace(batchId: string, direction: TraceDirection = 'forward', requester?: Actor): Promise<TraceResult> {
-    const batch = await this.batchRepo.findById(batchId);
-    if (!batch || (requester && batch.tenantId !== requester.tenantId)) throw new NotFoundError('Batch not found');
-
-    const [ascending, anomalies] = await Promise.all([
-      this.eventRepo.findByBatchId(batchId),
-      this.anomalyRepo.findByBatchId(batchId),
-    ]);
-    const isValid = verifyChain(ascending, this.signingKey);
-
-    const events = direction === 'backward' ? [...ascending].reverse() : ascending;
-
-    return { batch, events, anomalies, isValid };
+  private async inPublicScope<T>(batchId: string, fn: (batch: Batch) => Promise<T>): Promise<T> {
+    const tenantId = await this.repos.batchRepo.resolveTenantId(batchId);
+    if (!tenantId) throw new NotFoundError('Batch not found');
+    return this.db.withTenant(tenantId, async () => {
+      const batch = await this.repos.batchRepo.findById(batchId);
+      if (!batch) throw new NotFoundError('Batch not found');
+      return fn(batch);
+    });
   }
 
   async publicTrace(batchId: string): Promise<PublicTrace> {
-    const batch = await this.batchRepo.findById(batchId);
-    if (!batch) throw new NotFoundError('Batch not found');
+    return this.inPublicScope(batchId, async (batch) => {
+      const [events, anomalies] = await Promise.all([
+        this.repos.eventRepo.findByBatchId(batchId),
+        this.repos.anomalyRepo.findByBatchId(batchId),
+      ]);
+      const { valid } = verifyChainDetailed(events, this.verifyOptions(batch));
 
-    const [events, anomalies] = await Promise.all([
-      this.eventRepo.findByBatchId(batchId),
-      this.anomalyRepo.findByBatchId(batchId),
-    ]);
-    const isValid = verifyChain(events, this.signingKey);
-    const stageCount = new Set(events.map((e) => e.stage)).size;
-
-    return {
-      batch: {
-        id: batch.id,
-        productName: batch.productName,
-        productType: batch.productType,
-        origin: batch.origin,
-        currentStage: batch.currentStage,
-        isRecalled: batch.isRecalled,
-        recallReason: batch.recallReason,
-      },
-      stageCount,
-      isValid,
-      hasAnomalies: anomalies.length > 0,
-    };
+      return {
+        batch: {
+          id: batch.id,
+          productName: batch.productName,
+          productType: batch.productType,
+          origin: batch.origin,
+          currentStage: batch.currentStage,
+          isRecalled: batch.isRecalled,
+          recallReason: batch.recallReason,
+        },
+        stageCount: new Set(events.map((e) => e.stage)).size,
+        isValid: valid,
+        hasAnomalies: anomalies.length > 0,
+      };
+    });
   }
 
   /**
-   * Full, unauthenticated chain-integrity check: every event's hash and link
-   * to the previous one, laid bare — for the public "Chain Verifier" tool
-   * aimed at technical auditors, as opposed to `publicTrace`'s curated summary
-   * for end consumers.
+   * Full, unauthenticated chain-integrity check for the public "Chain
+   * Verifier": every event with everything needed to recompute its v2 hash
+   * independently (including the salt), the per-event result, and whether
+   * the chain ends at the head the database recorded.
    */
-  async verifyPublic(batchId: string): Promise<{ batch: Pick<Batch, 'id' | 'productName'>; events: TraceEvent[] } & ChainVerification> {
-    const batch = await this.batchRepo.findById(batchId);
-    if (!batch) throw new NotFoundError('Batch not found');
-
-    const events = await this.eventRepo.findByBatchId(batchId);
-    const verification = verifyChainDetailed(events, this.signingKey);
-
-    return { batch: { id: batch.id, productName: batch.productName }, events, ...verification };
+  async verifyPublic(batchId: string): Promise<PublicVerification> {
+    return this.inPublicScope(batchId, async (batch) => {
+      const events = await this.repos.eventRepo.findByBatchId(batchId);
+      const verification = verifyChainDetailed(events, this.verifyOptions(batch));
+      // The tenant id is internal bookkeeping, not part of the hash preimage — don't publish it.
+      const publicEvents = events.map(({ tenantId: _internal, ...rest }) => rest);
+      return { batch: { id: batch.id, productName: batch.productName }, events: publicEvents, ...verification };
+    });
   }
 }

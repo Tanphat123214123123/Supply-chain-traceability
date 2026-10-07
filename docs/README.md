@@ -23,7 +23,7 @@ TraceChain là hệ thống truy xuất nguồn gốc sản phẩm trong chuỗi
                                        │   SHA-256 per event  │
                                        ├──────────────────────┤
                                        │   Repository Layer   │
-                                       │   In-Memory / PgSQL  │
+                                       │  PostgreSQL 16 (RLS) │
                                        └──────────────────────┘
 ```
 
@@ -110,7 +110,7 @@ Mức CRITICAL và HIGH **chặn** hành động. MEDIUM và LOW chỉ **cảnh 
 | Backend   | Node.js 20, TypeScript 5, Express 4          |
 | Crypto    | Node.js `crypto` (SHA-256 built-in)          |
 | Auth      | JWT (`jsonwebtoken`), bcrypt (`bcryptjs`)    |
-| DB        | In-Memory (demo) → PostgreSQL 16 (production)|
+| DB        | PostgreSQL 16 — xem [DATABASE.md](DATABASE.md) |
 | Frontend  | React 18, Vite 5, Tailwind CSS 3             |
 | Router    | React Router v6                              |
 | HTTP      | Axios                                        |

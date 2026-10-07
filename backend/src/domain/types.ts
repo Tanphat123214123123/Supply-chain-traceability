@@ -74,6 +74,13 @@ export interface Batch {
    * — falls back to "anyone with the right role" for that case.
    */
   assignedToActorId?: string;
+  /**
+   * Head of this batch's hash chain as recorded by the database — advanced
+   * only by the ledger insert trigger (migration 007), never by the app.
+   * Lets a verifier detect a truncated chain, not just an edited one.
+   */
+  headHash: string;
+  eventCount: number;
 }
 
 export interface TraceEvent {
@@ -85,9 +92,14 @@ export interface TraceEvent {
   location: string;
   notes?: string;
   data: Record<string, unknown>;
+  tenantId: string;
   hash: string;
   prevHash: string;
   sequenceNumber: number;
+  /** 1 = legacy HMAC (server-verifiable only), 2 = public salted SHA-256 — see ledger/hashChain.ts. */
+  hashVersion: 1 | 2;
+  /** Per-event random salt, part of the v2 hash preimage. Absent on v1 events. */
+  salt?: string;
 }
 
 export type AnomalySeverity = 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
@@ -211,8 +223,10 @@ export interface BatchListQuery {
 }
 
 export interface RefreshTokenRecord {
+  /** SHA-256 of the raw token — the raw value is never stored. */
   token: string;
   actorId: string;
+  tenantId: string;
   expiresAt: Date;
   revoked: boolean;
   createdAt: Date;

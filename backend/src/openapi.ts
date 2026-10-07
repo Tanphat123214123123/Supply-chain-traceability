@@ -39,6 +39,13 @@ export const openApiSpec = {
           isRecalled: { type: 'boolean' },
           recallReason: { type: 'string', nullable: true },
           metadata: { type: 'object' },
+          assignedToActorId: { type: 'string', format: 'uuid', nullable: true },
+          headHash: {
+            type: 'string',
+            pattern: '^[0-9a-f]{64}$',
+            description: 'Hash of the last event, i.e. the recorded head of the batch chain (genesis = 64 zeros).',
+          },
+          eventCount: { type: 'integer', description: 'Number of events in the chain; a verifier compares it to the events returned.' },
         },
       },
       TraceEvent: {
@@ -51,9 +58,17 @@ export const openApiSpec = {
           timestamp: { type: 'string', format: 'date-time' },
           location: { type: 'string' },
           notes: { type: 'string', nullable: true },
-          hash: { type: 'string' },
-          prevHash: { type: 'string' },
+          data: { type: 'object' },
+          hash: { type: 'string', pattern: '^[0-9a-f]{64}$' },
+          prevHash: { type: 'string', pattern: '^[0-9a-f]{64}$' },
           sequenceNumber: { type: 'integer' },
+          hashVersion: {
+            type: 'integer',
+            enum: [1, 2],
+            description:
+              '2 = SHA-256 over the RFC 8785 canonical JSON of {v, salt, batchId, sequenceNumber, prevHash, stage, actorId, timestamp, location, notes, data} — recomputable by anyone. 1 = legacy HMAC, server-verifiable only.',
+          },
+          salt: { type: 'string', pattern: '^[0-9a-f]{64}$', description: 'Per-event random salt (v2 only).' },
         },
       },
       Error: {

@@ -1,10 +1,11 @@
 # TraceChain — Hệ thống Truy xuất Nguồn gốc Chuỗi Cung ứng
 
-Hệ thống quản lý và truy xuất nguồn gốc sản phẩm trong chuỗi cung ứng, sử dụng **hash-chain ledger** (sổ cái chuỗi băm) để đảm bảo dữ liệu bất biến và có thể kiểm chứng.
+Hệ thống quản lý và truy xuất nguồn gốc sản phẩm trong chuỗi cung ứng, sử dụng **hash-chain ledger** (sổ cái chuỗi băm) để đảm bảo dữ liệu bất biến và có thể kiểm chứng. Cách lưu trữ, bảo mật dữ liệu và đặc tả hash: xem [docs/DATABASE.md](docs/DATABASE.md).
 
 ## Tính năng cốt lõi
 
-- **Hash-chain bất biến** — mỗi sự kiện được ký SHA-256 liên kết với sự kiện trước, phát hiện ngay bất kỳ sửa đổi nào
+- **Hash-chain bất biến, tự kiểm chứng được** — mỗi sự kiện được băm SHA-256 (JSON chuẩn hoá RFC 8785, có salt) nối với sự kiện trước; ai cũng tự tính lại được mà không cần khoá bí mật. Database tự chặn sửa/xoá sổ cái và kiểm tra liên kết khi ghi
+- **Cách ly tenant bằng PostgreSQL** — row-level security + khoá ngoại theo tenant; API chạy bằng role quyền tối thiểu
 - **RBAC** — 6 vai trò (Nông dân, Nhà chế biến, Kiểm định viên, Nhà phân phối, Nhà bán lẻ, Admin), mỗi vai trò chỉ ghi được khâu tương ứng
 - **Truy xuất 2 chiều** — thuận chiều (từ nông trại → kệ hàng) và ngược chiều
 - **Cảnh báo bất thường** — phát hiện ghi nhảy khâu, ghi trùng, ghi sai thứ tự
@@ -18,12 +19,13 @@ tracechain/
 ├── backend/                    # API + nghiệp vụ (Node.js + TypeScript)
 │   ├── src/
 │   │   ├── domain/types.ts     # Domain model
-│   │   ├── ledger/hashChain.ts # Hash-chain core
-│   │   ├── repository/         # Tầng lưu trữ (InMemory + PostgreSQL stubs)
+│   │   ├── db/                 # Kết nối, transaction theo tenant, migrator
+│   │   ├── ledger/             # Hash-chain + chuẩn hoá JSON RFC 8785
+│   │   ├── repository/         # Tầng lưu trữ PostgreSQL
 │   │   ├── services/           # Business logic
 │   │   └── api/                # HTTP routes + middleware
-│   ├── tests/                  # 21 unit tests
-│   └── migrations/             # SQL schema
+│   ├── tests/                  # Test trên PostgreSQL thật (Testcontainers)
+│   └── migrations/             # SQL migration có đánh số, chạy bằng `npm run migrate`
 ├── frontend/                   # React 18 + Vite + Tailwind CSS
 │   └── src/
 │       ├── pages/              # Login, Dashboard, RecordEvent, BatchDetail, Provenance
@@ -37,15 +39,25 @@ tracechain/
 
 ## Chạy nhanh
 
-### Backend (demo mode — in-memory)
+### Cách nhanh nhất: Docker Compose (PostgreSQL + migrate + backend + frontend)
+
+```bash
+docker compose up --build
+```
+
+Mở http://localhost:5173 và đăng nhập bằng tài khoản demo bên dưới.
+
+### Backend chạy ngoài Docker
+
+Cần một PostgreSQL 16, ví dụ chỉ bật service `postgres`: `docker compose up -d postgres`. Service này mở ra máy bạn ở cổng **55432**, không dùng 5432 để tránh đụng PostgreSQL cài sẵn trên máy; đổi được bằng biến `POSTGRES_HOST_PORT`.
 
 ```bash
 cd backend
 npm install
-npm run demo          # Demo end-to-end với dữ liệu mẫu
-
-npm run dev           # Khởi động server trên :3000
-npm test              # Chạy 21 unit tests
+cp .env.example .env  # điền JWT_SECRET
+npm run migrate       # áp dụng migration bằng role chủ schema
+npm run dev           # khởi động server trên :3000 (kết nối bằng role tracechain_app)
+npm test              # cần Docker (Testcontainers) hoặc đặt TEST_DATABASE_URL
 ```
 
 ### Frontend
@@ -54,12 +66,6 @@ npm test              # Chạy 21 unit tests
 cd frontend
 npm install
 npm run dev           # Khởi động trên :5173 (proxy đến :3000)
-```
-
-### Docker Compose (PostgreSQL + backend + frontend)
-
-```bash
-docker compose up
 ```
 
 ## Tài khoản demo
@@ -75,6 +81,7 @@ docker compose up
 
 ## Tài liệu
 
+- [Cơ sở dữ liệu: migration, RLS, sổ cái, đặc tả hash, vận hành](docs/DATABASE.md)
 - [Blueprint tổng quan](docs/README.md)
 - [Kế hoạch 2 người](docs/KEHOACH_2NGUOI.md)
 - [Đặc tả màn hình](docs/MANHINH_THEO_VAITRO.md)

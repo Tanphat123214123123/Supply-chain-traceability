@@ -1,128 +1,150 @@
-import { Actor } from '../src/domain/types';
-import { InMemoryActorRepo } from '../src/repository/memory/actorRepo';
-import { InMemoryAnomalyRepo } from '../src/repository/memory/anomalyRepo';
-import { InMemoryAuditLogRepo } from '../src/repository/memory/auditLogRepo';
-import { InMemoryBatchRepo } from '../src/repository/memory/batchRepo';
-import { InMemoryEventRepo } from '../src/repository/memory/eventRepo';
-import { SupplyChainService } from '../src/services/supplyChainService';
-import { TraceService } from '../src/services/traceService';
+import { createHash } from 'crypto';
+import { v4 as uuidv4 } from 'uuid';
+import { canonicalize } from '../src/ledger/canonicalJson';
+import { computeEventHashV1, GENESIS_HASH } from '../src/ledger/hashChain';
+import { asAttacker, createActor, createTenant, sampleBatch, TestDb, TEST_LEGACY_KEY, useTestDatabase } from './helpers/testDb';
 
-function makeActor(overrides: Partial<Actor> = {}): Actor {
-  return {
-    id: 'actor-1', name: 'Test', email: 'a@test.com', passwordHash: 'x',
-    role: 'FARMER', organization: 'Org', tenantId: 'tenant-1', createdAt: new Date(), isActive: true,
-    ...overrides,
-  };
-}
+const getDb = useTestDatabase();
 
-function makeContext() {
-  const batchRepo = new InMemoryBatchRepo();
-  const eventRepo = new InMemoryEventRepo();
-  const anomalyRepo = new InMemoryAnomalyRepo();
-  const auditLogRepo = new InMemoryAuditLogRepo();
-  const actorRepo = new InMemoryActorRepo();
-  return {
-    batchRepo,
-    eventRepo,
-    actorRepo,
-    supplyChain: new SupplyChainService(batchRepo, eventRepo, anomalyRepo, auditLogRepo, actorRepo, 'test-signing-key'),
-    traceService: new TraceService(batchRepo, eventRepo, anomalyRepo, 'test-signing-key'),
-  };
-}
-
-/** Creates an actor AND persists it, for use as a recordEvent caller or assignNextTo target. */
-async function persistActor(actorRepo: InMemoryActorRepo, overrides: Partial<Actor> = {}): Promise<Actor> {
-  const actor = makeActor(overrides);
-  await actorRepo.create(actor);
-  return actor;
+async function batchWithTwoEvents(t: TestDb) {
+  const tenant = await createTenant(t);
+  const farmer = await createActor(t, tenant, 'FARMER');
+  const processor = await createActor(t, tenant, 'PROCESSOR');
+  const admin = await createActor(t, tenant, 'ADMIN');
+  const svc = t.ctx.supplyChainService;
+  const batch = await svc.createBatch(farmer, sampleBatch);
+  await svc.recordEvent(farmer, { batchId: batch.id, stage: 'HARVEST', location: 'x', assignNextTo: processor.id });
+  await svc.recordEvent(processor, { batchId: batch.id, stage: 'PROCESSING', location: 'y', assignNextTo: admin.id });
+  return { tenant, farmer, processor, admin, batch };
 }
 
 describe('TraceService', () => {
-  it('traces forward in ascending sequence order', async () => {
-    const { supplyChain, traceService, actorRepo } = makeContext();
-    const farmer = await persistActor(actorRepo, { role: 'FARMER' });
-    const processor = await persistActor(actorRepo, { id: 'a2', role: 'PROCESSOR' });
-    // ADMIN's role satisfies every stage, so it's a convenient assignNextTo
-    // target for tests that don't care which specific actor comes next.
-    const admin = await persistActor(actorRepo, { id: 'a3', role: 'ADMIN' });
-    const batch = await supplyChain.createBatch(farmer, {
-      productName: 'X', productType: 'x', origin: 'x', quantity: 1, unit: 'kg',
-    });
-    await supplyChain.recordEvent(farmer, { batchId: batch.id, stage: 'HARVEST', location: 'x', assignNextTo: processor.id });
-    await supplyChain.recordEvent(processor, { batchId: batch.id, stage: 'PROCESSING', location: 'x', assignNextTo: admin.id });
+  it('traces forward and backward, and the untouched chain is valid', async () => {
+    const t = getDb();
+    const { farmer, batch } = await batchWithTwoEvents(t);
+    const forward = await t.ctx.traceService.trace(batch.id, 'forward', farmer);
+    expect(forward.events.map((e) => e.stage)).toEqual(['HARVEST', 'PROCESSING']);
+    expect(forward.isValid).toBe(true);
+    expect(forward.anomalies).toHaveLength(0);
 
-    const result = await traceService.trace(batch.id, 'forward');
-    expect(result.events.map((e) => e.stage)).toEqual(['HARVEST', 'PROCESSING']);
-    expect(result.isValid).toBe(true);
-    expect(result.anomalies).toHaveLength(0);
+    const backward = await t.ctx.traceService.trace(batch.id, 'backward', farmer);
+    expect(backward.events.map((e) => e.stage)).toEqual(['PROCESSING', 'HARVEST']);
   });
 
-  it('traces backward in descending sequence order', async () => {
-    const { supplyChain, traceService, actorRepo } = makeContext();
-    const farmer = await persistActor(actorRepo, { role: 'FARMER' });
-    const processor = await persistActor(actorRepo, { id: 'a2', role: 'PROCESSOR' });
-    // ADMIN's role satisfies every stage, so it's a convenient assignNextTo
-    // target for tests that don't care which specific actor comes next.
-    const admin = await persistActor(actorRepo, { id: 'a3', role: 'ADMIN' });
-    const batch = await supplyChain.createBatch(farmer, {
-      productName: 'X', productType: 'x', origin: 'x', quantity: 1, unit: 'kg',
-    });
-    await supplyChain.recordEvent(farmer, { batchId: batch.id, stage: 'HARVEST', location: 'x', assignNextTo: processor.id });
-    await supplyChain.recordEvent(processor, { batchId: batch.id, stage: 'PROCESSING', location: 'x', assignNextTo: admin.id });
+  it('flags the chain invalid once a stored event is edited behind the application\'s back', async () => {
+    const t = getDb();
+    const { farmer, batch } = await batchWithTwoEvents(t);
+    await asAttacker(t, "UPDATE trace_events SET location = 'TAMPERED' WHERE batch_id = $1 AND sequence_number = 0", [batch.id]);
 
-    const result = await traceService.trace(batch.id, 'backward');
-    expect(result.events.map((e) => e.stage)).toEqual(['PROCESSING', 'HARVEST']);
+    expect((await t.ctx.traceService.trace(batch.id, 'forward', farmer)).isValid).toBe(false);
+    const full = await t.ctx.traceService.verifyPublic(batch.id);
+    expect(full).toMatchObject({ valid: false, brokenAtIndex: 0, problem: 'TAMPERED_EVENT' });
   });
 
-  it('flags the chain invalid once an event is tampered with', async () => {
-    const { supplyChain, traceService, actorRepo } = makeContext();
-    const farmer = await persistActor(actorRepo, { role: 'FARMER' });
-    const processor = await persistActor(actorRepo, { role: 'PROCESSOR', id: 'a2' });
-    const batch = await supplyChain.createBatch(farmer, {
-      productName: 'X', productType: 'x', origin: 'x', quantity: 1, unit: 'kg',
-    });
-    const event = await supplyChain.recordEvent(farmer, {
-      batchId: batch.id, stage: 'HARVEST', location: 'x', assignNextTo: processor.id,
-    });
+  it('flags a deleted tail — the remaining chain links perfectly but no longer reaches the recorded head', async () => {
+    const t = getDb();
+    const { batch } = await batchWithTwoEvents(t);
+    await asAttacker(t, 'DELETE FROM trace_events WHERE batch_id = $1 AND sequence_number = 1', [batch.id]);
 
-    event.location = 'TAMPERED'; // mutate the stored event in place (same object reference)
-
-    const result = await traceService.trace(batch.id);
-    expect(result.isValid).toBe(false);
+    const full = await t.ctx.traceService.verifyPublic(batch.id);
+    expect(full.events).toHaveLength(1);
+    expect(full.perEvent[0]).toMatchObject({ matchesStoredHash: true, linksToPrevious: true });
+    expect(full).toMatchObject({ valid: false, problem: 'HEAD_MISMATCH', headMatches: false });
   });
 
   it('surfaces anomalies detected across the batch history', async () => {
-    const { supplyChain, traceService } = makeContext();
-    const admin = makeActor({ role: 'ADMIN' });
-    const batch = await supplyChain.createBatch(admin, {
-      productName: 'X', productType: 'x', origin: 'x', quantity: 1, unit: 'kg',
-    });
-    await supplyChain.recordEvent(admin, { batchId: batch.id, stage: 'HARVEST', location: 'x' });
-    await supplyChain.recordEvent(admin, { batchId: batch.id, stage: 'PACKAGING', location: 'x' }); // skips stages
-
-    const result = await traceService.trace(batch.id);
+    const t = getDb();
+    const tenant = await createTenant(t);
+    const admin = await createActor(t, tenant, 'ADMIN');
+    const batch = await t.ctx.supplyChainService.createBatch(admin, sampleBatch);
+    await t.ctx.supplyChainService.recordEvent(admin, { batchId: batch.id, stage: 'HARVEST', location: 'x' });
+    await t.ctx.supplyChainService.recordEvent(admin, { batchId: batch.id, stage: 'PACKAGING', location: 'x' });
+    const result = await t.ctx.traceService.trace(batch.id, 'forward', admin);
     expect(result.anomalies.some((a) => a.type === 'STAGE_SKIPPED')).toBe(true);
   });
 
-  it('throws for an unknown batch', async () => {
-    const { traceService } = makeContext();
-    await expect(traceService.trace('missing')).rejects.toThrow();
+  it("is tenant-scoped for authenticated traces (another tenant gets 404)", async () => {
+    const t = getDb();
+    const { batch } = await batchWithTwoEvents(t);
+    const outsider = await createActor(t, await createTenant(t), 'ADMIN');
+    await expect(t.ctx.traceService.trace(batch.id, 'forward', outsider)).rejects.toThrow('Batch not found');
   });
 
   it('builds a public trace without exposing internal batch fields', async () => {
-    const { supplyChain, traceService, actorRepo } = makeContext();
-    const farmer = await persistActor(actorRepo, { role: 'FARMER' });
-    const processor = await persistActor(actorRepo, { role: 'PROCESSOR', id: 'a2' });
-    const batch = await supplyChain.createBatch(farmer, {
-      productName: 'X', productType: 'x', origin: 'x', quantity: 1, unit: 'kg',
-    });
-    await supplyChain.recordEvent(farmer, {
-      batchId: batch.id, stage: 'HARVEST', location: 'x', assignNextTo: processor.id,
-    });
-
-    const publicTrace = await traceService.publicTrace(batch.id);
-    expect(publicTrace.stageCount).toBe(1);
-    expect(publicTrace.isValid).toBe(true);
+    const t = getDb();
+    const { batch } = await batchWithTwoEvents(t);
+    const publicTrace = await t.ctx.traceService.publicTrace(batch.id);
+    expect(publicTrace).toMatchObject({ stageCount: 2, isValid: true, hasAnomalies: false });
     expect((publicTrace.batch as Record<string, unknown>).createdBy).toBeUndefined();
+  });
+
+  it('returns 404 for unknown or malformed ids on public routes', async () => {
+    const t = getDb();
+    await expect(t.ctx.traceService.publicTrace(uuidv4())).rejects.toThrow('Batch not found');
+    await expect(t.ctx.traceService.publicTrace('not-a-uuid')).rejects.toThrow('Batch not found');
+    await expect(t.ctx.traceService.verifyPublic("'; DROP TABLE batches; --")).rejects.toThrow('Batch not found');
+  });
+
+  it('publishes everything a third party needs to recompute every v2 hash with NO server secret', async () => {
+    const t = getDb();
+    const { batch } = await batchWithTwoEvents(t);
+    const { events, valid } = await t.ctx.traceService.verifyPublic(batch.id);
+    expect(valid).toBe(true);
+
+    // An independent verifier: only JCS + SHA-256, nothing imported from the ledger module's hashing.
+    let prev = GENESIS_HASH;
+    for (const e of events) {
+      const preimage = canonicalize({
+        v: 2,
+        salt: e.salt,
+        batchId: e.batchId,
+        sequenceNumber: e.sequenceNumber,
+        prevHash: e.prevHash,
+        stage: e.stage,
+        actorId: e.actorId,
+        timestamp: new Date(e.timestamp).toISOString(),
+        location: e.location,
+        notes: e.notes ?? null,
+        data: e.data,
+      });
+      expect(createHash('sha256').update(preimage, 'utf8').digest('hex')).toBe(e.hash);
+      expect(e.prevHash).toBe(prev);
+      prev = e.hash;
+    }
+    expect(events.every((e) => !('tenantId' in e))).toBe(true);
+  });
+
+  it('still verifies legacy v1 (HMAC) events written before hash v2, given the legacy key', async () => {
+    const t = getDb();
+    const tenant = await createTenant(t);
+    const farmer = await createActor(t, tenant, 'FARMER');
+    const batch = await t.ctx.supplyChainService.createBatch(farmer, sampleBatch);
+
+    // Simulate a pre-v2 row exactly as the old code wrote it.
+    const legacy = {
+      batchId: batch.id,
+      stage: 'HARVEST' as const,
+      actorId: farmer.id,
+      timestamp: new Date('2026-01-01T00:00:00.000Z'),
+      location: 'legacy',
+      notes: undefined,
+      data: {},
+      prevHash: GENESIS_HASH,
+      sequenceNumber: 0,
+    };
+    const legacyHash = computeEventHashV1(legacy, TEST_LEGACY_KEY);
+    await t.ownerPool.query(
+      `INSERT INTO trace_events (id, batch_id, tenant_id, stage, actor_id, timestamp, location, data, hash, prev_hash,
+                                 sequence_number, hash_version)
+       VALUES ($1, $2, $3, 'HARVEST', $4, $5, 'legacy', '{}', $6, $7, 0, 1)`,
+      [uuidv4(), batch.id, tenant.id, farmer.id, legacy.timestamp, legacyHash, GENESIS_HASH],
+    );
+    // ...and v2 continues the same chain.
+    const admin = await createActor(t, tenant, 'ADMIN');
+    await t.ctx.supplyChainService.recordEvent(admin, { batchId: batch.id, stage: 'PROCESSING', location: 'v2' });
+
+    const result = await t.ctx.traceService.verifyPublic(batch.id);
+    expect(result).toMatchObject({ valid: true, legacyEventCount: 1 });
+    expect(result.perEvent.map((p) => p.hashVersion)).toEqual([1, 2]);
   });
 });

@@ -1,20 +1,7 @@
+import jwt from 'jsonwebtoken';
 import request from 'supertest';
-import { v4 as uuidv4 } from 'uuid';
 import { createApp } from '../src/app';
-import { InMemoryActorRepo } from '../src/repository/memory/actorRepo';
-import { InMemoryAnomalyRepo } from '../src/repository/memory/anomalyRepo';
-import { InMemoryAuditLogRepo } from '../src/repository/memory/auditLogRepo';
-import { InMemoryBatchRepo } from '../src/repository/memory/batchRepo';
-import { InMemoryEventRepo } from '../src/repository/memory/eventRepo';
-import { InMemoryRefreshTokenRepo } from '../src/repository/memory/refreshTokenRepo';
-import { InMemoryTenantRepo } from '../src/repository/memory/tenantRepo';
-import { SocketRealtimeEmitter } from '../src/realtime';
-import { AdminService } from '../src/services/adminService';
-import { AuthService } from '../src/services/authService';
-import { StatsService } from '../src/services/statsService';
-import { SupplyChainService } from '../src/services/supplyChainService';
-import { TraceService } from '../src/services/traceService';
-import { AppContext } from '../src/bootstrap';
+import { createTenant, TEST_JWT_SECRET, useTestDatabase } from './helpers/testDb';
 
 // Every actor registered in these tests (whether via authService.register
 // directly or POST /api/auth/register) joins this SAME pre-existing tenant —
@@ -22,33 +9,13 @@ import { AppContext } from '../src/bootstrap';
 // genuinely NEW tenant its ADMIN regardless of chosen role.
 const TENANT_SLUG = 'test-tenant';
 
+const getDb = useTestDatabase();
+
 async function makeApp() {
-  const actorRepo = new InMemoryActorRepo();
-  const batchRepo = new InMemoryBatchRepo();
-  const eventRepo = new InMemoryEventRepo();
-  const anomalyRepo = new InMemoryAnomalyRepo();
-  const auditLogRepo = new InMemoryAuditLogRepo();
-  const refreshTokenRepo = new InMemoryRefreshTokenRepo();
-  const tenantRepo = new InMemoryTenantRepo();
-  await tenantRepo.create({ id: uuidv4(), slug: TENANT_SLUG, name: 'Test Tenant', createdAt: new Date() });
-  const authService = new AuthService(actorRepo, refreshTokenRepo, auditLogRepo, tenantRepo, 'test-secret');
-  const ctx: AppContext = {
-    tenantRepo,
-    actorRepo,
-    batchRepo,
-    eventRepo,
-    anomalyRepo,
-    auditLogRepo,
-    refreshTokenRepo,
-    authService,
-    supplyChainService: new SupplyChainService(batchRepo, eventRepo, anomalyRepo, auditLogRepo, actorRepo, 'test-signing-key'),
-    traceService: new TraceService(batchRepo, eventRepo, anomalyRepo, 'test-signing-key'),
-    statsService: new StatsService(batchRepo, eventRepo, anomalyRepo),
-    adminService: new AdminService(actorRepo, eventRepo, batchRepo, anomalyRepo, auditLogRepo, 'test-signing-key'),
-    realtime: new SocketRealtimeEmitter(),
-    usingPostgres: false,
-  };
-  const app = createApp(ctx, 'http://localhost:5173');
+  const t = getDb();
+  await createTenant(t, TENANT_SLUG);
+  const { authService } = t.ctx;
+  const app = createApp(t.ctx, 'http://localhost:5173');
 
   const farmer = await authService.register('Farmer', 'farmer@test.com', 'password1', 'FARMER', 'Farm', TENANT_SLUG);
   const admin = await authService.register('Admin', 'admin@test.com', 'password1', 'ADMIN', 'HQ', TENANT_SLUG);
@@ -517,6 +484,66 @@ describe('API route wiring', () => {
     const res = await request(app).get('/api/openapi.json');
     expect(res.status).toBe(200);
     expect(res.body.info.title).toBe('TraceChain API');
+  });
+
+  it('reports database health', async () => {
+    const { app } = await makeApp();
+    const res = await request(app).get('/health');
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ status: 'ok', database: 'ok' });
+  });
+
+  it('answers 404 (never 500) for malformed ids on public and authenticated routes', async () => {
+    const { app, farmerToken } = await makeApp();
+    for (const path of ['/api/trace/public/not-a-uuid', "/api/trace/public/'%20OR%201=1--/full"]) {
+      expect((await request(app).get(path)).status).toBe(404);
+    }
+    const res = await request(app).get('/api/batches/xyz').set('Authorization', `Bearer ${farmerToken}`);
+    expect(res.status).toBe(404);
+  });
+
+  it('rejects access tokens minted before tenantId was part of the payload', async () => {
+    const { app, farmer } = await makeApp();
+    const oldStyle = jwt.sign({ actorId: farmer.id, role: farmer.role, email: farmer.email }, TEST_JWT_SECRET);
+    const res = await request(app).get('/api/auth/me').set('Authorization', `Bearer ${oldStyle}`);
+    expect(res.status).toBe(401);
+  });
+
+  it('returns 409 when recalling an already-recalled batch', async () => {
+    const { app, farmerToken, adminToken } = await makeApp();
+    const create = await request(app)
+      .post('/api/batches')
+      .set('Authorization', `Bearer ${farmerToken}`)
+      .send({ productName: 'X', productType: 'x', origin: 'x', quantity: 1, unit: 'kg' });
+    const first = await request(app)
+      .post(`/api/batches/${create.body.id}/recall`)
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({ reason: 'a' });
+    expect(first.status).toBe(200);
+    const second = await request(app)
+      .post(`/api/batches/${create.body.id}/recall`)
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({ reason: 'b' });
+    expect(second.status).toBe(409);
+  });
+
+  it('public chain verifier exposes salts and head status, and hides tenant ids', async () => {
+    const { app, farmerToken, admin } = await makeApp();
+    const create = await request(app)
+      .post('/api/batches')
+      .set('Authorization', `Bearer ${farmerToken}`)
+      .send({ productName: 'X', productType: 'x', origin: 'x', quantity: 1, unit: 'kg' });
+    await request(app)
+      .post('/api/events')
+      .set('Authorization', `Bearer ${farmerToken}`)
+      .send({ batchId: create.body.id, stage: 'HARVEST', location: 'x', assignNextTo: admin.id });
+
+    const res = await request(app).get(`/api/trace/public/${create.body.id}/full`);
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ valid: true, headMatches: true, legacyEventCount: 0 });
+    expect(res.body.events[0]).toMatchObject({ hashVersion: 2 });
+    expect(res.body.events[0].salt).toMatch(/^[0-9a-f]{64}$/);
+    expect(res.body.events[0].tenantId).toBeUndefined();
   });
 
   describe('tenant isolation', () => {

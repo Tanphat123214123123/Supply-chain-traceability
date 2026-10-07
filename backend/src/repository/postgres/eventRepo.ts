@@ -1,10 +1,11 @@
-import { Pool } from 'pg';
+import { Database, isUuid } from '../../db/database';
 import { SupplyChainStage, TraceEvent } from '../../domain/types';
 import { IEventRepo } from '../interfaces';
 
 interface EventRow {
   id: string;
   batch_id: string;
+  tenant_id: string;
   stage: SupplyChainStage;
   actor_id: string;
   timestamp: Date;
@@ -14,12 +15,18 @@ interface EventRow {
   hash: string;
   prev_hash: string;
   sequence_number: number;
+  hash_version: number;
+  salt: string | null;
 }
 
-function toEvent(row: EventRow): TraceEvent {
+const COLUMNS =
+  'id, batch_id, tenant_id, stage, actor_id, timestamp, location, notes, data, hash, prev_hash, sequence_number, hash_version, salt';
+
+export function toEvent(row: EventRow): TraceEvent {
   return {
     id: row.id,
     batchId: row.batch_id,
+    tenantId: row.tenant_id,
     stage: row.stage,
     actorId: row.actor_id,
     timestamp: row.timestamp,
@@ -29,19 +36,28 @@ function toEvent(row: EventRow): TraceEvent {
     hash: row.hash,
     prevHash: row.prev_hash,
     sequenceNumber: row.sequence_number,
+    hashVersion: row.hash_version === 2 ? 2 : 1,
+    salt: row.salt ?? undefined,
   };
 }
 
 export class PostgresEventRepo implements IEventRepo {
-  constructor(private readonly pool: Pool) {}
+  constructor(private readonly db: Database) {}
 
+  /**
+   * The BEFORE INSERT trigger (migration 007) re-checks sequence_number and
+   * prev_hash against the batch's recorded head and advances that head — so
+   * even a buggy caller cannot fork or rewind a chain.
+   */
   async create(event: TraceEvent): Promise<TraceEvent> {
-    await this.pool.query(
-      `INSERT INTO trace_events (id, batch_id, stage, actor_id, timestamp, location, notes, data, hash, prev_hash, sequence_number)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+    await this.db.query(
+      `INSERT INTO trace_events (id, batch_id, tenant_id, stage, actor_id, timestamp, location, notes, data,
+                                 hash, prev_hash, sequence_number, hash_version, salt)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
       [
         event.id,
         event.batchId,
+        event.tenantId,
         event.stage,
         event.actorId,
         event.timestamp,
@@ -51,67 +67,28 @@ export class PostgresEventRepo implements IEventRepo {
         event.hash,
         event.prevHash,
         event.sequenceNumber,
+        event.hashVersion,
+        event.salt ?? null,
       ],
     );
     return event;
   }
 
   async findByBatchId(batchId: string): Promise<TraceEvent[]> {
-    const result = await this.pool.query<EventRow>(
-      'SELECT * FROM trace_events WHERE batch_id = $1 ORDER BY sequence_number ASC',
+    if (!isUuid(batchId)) return [];
+    const result = await this.db.query<EventRow>(
+      `SELECT ${COLUMNS} FROM trace_events WHERE batch_id = $1 ORDER BY sequence_number ASC`,
       [batchId],
     );
     return result.rows.map(toEvent);
   }
 
-  async findByActorId(actorId: string): Promise<TraceEvent[]> {
-    const result = await this.pool.query<EventRow>(
-      'SELECT * FROM trace_events WHERE actor_id = $1 ORDER BY timestamp DESC',
-      [actorId],
+  async findByBatchIds(batchIds: string[]): Promise<TraceEvent[]> {
+    if (batchIds.length === 0) return [];
+    const result = await this.db.query<EventRow>(
+      `SELECT ${COLUMNS} FROM trace_events WHERE batch_id = ANY ($1::uuid[]) ORDER BY batch_id, sequence_number ASC`,
+      [batchIds],
     );
     return result.rows.map(toEvent);
-  }
-
-  async countAll(): Promise<number> {
-    const result = await this.pool.query<{ count: string }>('SELECT count(*)::text AS count FROM trace_events');
-    return Number(result.rows[0]?.count ?? 0);
-  }
-
-  async lastEvent(batchId: string): Promise<Pick<TraceEvent, 'sequenceNumber' | 'hash'> | null> {
-    const result = await this.pool.query<{ sequence_number: number; hash: string }>(
-      'SELECT sequence_number, hash FROM trace_events WHERE batch_id = $1 ORDER BY sequence_number DESC LIMIT 1',
-      [batchId],
-    );
-    const row = result.rows[0];
-    return row ? { sequenceNumber: row.sequence_number, hash: row.hash } : null;
-  }
-
-  async countByStage(): Promise<Partial<Record<SupplyChainStage, number>>> {
-    const result = await this.pool.query<{ stage: SupplyChainStage; count: string }>(
-      'SELECT stage, count(*)::text AS count FROM trace_events GROUP BY stage',
-    );
-    const counts: Partial<Record<SupplyChainStage, number>> = {};
-    for (const row of result.rows) counts[row.stage] = Number(row.count);
-    return counts;
-  }
-
-  async countAllForBatchIds(batchIds: string[]): Promise<number> {
-    if (batchIds.length === 0) return 0;
-    const result = await this.pool.query<{ count: string }>(
-      'SELECT count(*)::text AS count FROM trace_events WHERE batch_id = ANY($1::uuid[])',
-      [batchIds],
-    );
-    return Number(result.rows[0]?.count ?? 0);
-  }
-
-  async countByStageForBatchIds(batchIds: string[]): Promise<Partial<Record<SupplyChainStage, number>>> {
-    if (batchIds.length === 0) return {};
-    const result = await this.pool.query<{ stage: SupplyChainStage; count: string }>(
-      'SELECT stage, count(*)::text AS count FROM trace_events WHERE batch_id = ANY($1::uuid[]) GROUP BY stage',
-      [batchIds],
-    );
-    const counts: Partial<Record<SupplyChainStage, number>> = {};
-    for (const row of result.rows) counts[row.stage] = Number(row.count);
-    return counts;
   }
 }

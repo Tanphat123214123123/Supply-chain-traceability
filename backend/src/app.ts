@@ -34,19 +34,28 @@ export function createApp(ctx: AppContext, publicOrigin: string): Express {
     }),
   );
 
-  app.get('/health', (_req, res) => res.json({ status: 'ok', usingPostgres: ctx.usingPostgres }));
+  // Liveness + readiness in one: a container whose database is unreachable
+  // should be taken out of rotation, not keep answering 200.
+  app.get('/health', async (_req, res) => {
+    try {
+      await ctx.db.ping();
+      res.json({ status: 'ok', database: 'ok' });
+    } catch {
+      res.status(503).json({ status: 'degraded', database: 'unreachable' });
+    }
+  });
 
   app.use('/api/docs', swaggerUi.serve, swaggerUi.setup(openApiSpec));
   app.get('/api/openapi.json', (_req, res) => res.json(openApiSpec));
 
-  app.use('/api/auth', authRoutes(ctx.authService, ctx.actorRepo));
-  app.use('/api/batches', batchRoutes(ctx.supplyChainService, ctx.authService, ctx.actorRepo, publicOrigin));
-  app.use('/api/events', eventRoutes(ctx.supplyChainService, ctx.authService, ctx.actorRepo));
-  app.use('/api/trace', traceRoutes(ctx.traceService, ctx.authService, ctx.actorRepo));
-  app.use('/api/stats', statsRoutes(ctx.statsService, ctx.authService, ctx.actorRepo));
-  app.use('/api/admin', adminRoutes(ctx.auditLogRepo, ctx.adminService, ctx.authService, ctx.actorRepo));
-  app.use('/api/actors', actorsRoutes(ctx.adminService, ctx.authService, ctx.actorRepo));
-  app.use('/api/notifications', notificationsRoutes(ctx.adminService, ctx.authService, ctx.actorRepo));
+  app.use('/api/auth', authRoutes(ctx.authService));
+  app.use('/api/batches', batchRoutes(ctx.supplyChainService, ctx.authService, publicOrigin));
+  app.use('/api/events', eventRoutes(ctx.supplyChainService, ctx.authService));
+  app.use('/api/trace', traceRoutes(ctx.traceService, ctx.authService));
+  app.use('/api/stats', statsRoutes(ctx.statsService, ctx.authService));
+  app.use('/api/admin', adminRoutes(ctx.adminService, ctx.authService));
+  app.use('/api/actors', actorsRoutes(ctx.adminService, ctx.authService));
+  app.use('/api/notifications', notificationsRoutes(ctx.adminService, ctx.authService));
 
   app.use(errorHandler);
 

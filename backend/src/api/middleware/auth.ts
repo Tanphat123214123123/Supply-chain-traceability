@@ -1,6 +1,5 @@
 import { NextFunction, Request, Response } from 'express';
 import { Actor, ActorRole } from '../../domain/types';
-import { IActorRepo } from '../../repository/interfaces';
 import { AuthService } from '../../services/authService';
 
 declare global {
@@ -12,7 +11,7 @@ declare global {
   }
 }
 
-export function requireAuth(authService: AuthService, actorRepo: IActorRepo) {
+export function requireAuth(authService: AuthService) {
   return async (req: Request, res: Response, next: NextFunction) => {
     const header = req.headers.authorization;
     if (!header?.startsWith('Bearer ')) {
@@ -21,16 +20,16 @@ export function requireAuth(authService: AuthService, actorRepo: IActorRepo) {
     }
 
     try {
-      const payload = authService.verifyToken(header.slice('Bearer '.length));
-      const actor = await actorRepo.findById(payload.actorId);
-      if (!actor || !actor.isActive) {
-        res.status(401).json({ error: 'Invalid or inactive account' });
+      const actor = await authService.authenticate(header.slice('Bearer '.length));
+      if (!actor) {
+        res.status(401).json({ error: 'Invalid, expired or inactive session' });
         return;
       }
       req.actor = actor;
       next();
-    } catch {
-      res.status(401).json({ error: 'Invalid or expired token' });
+    } catch (err) {
+      // A database failure is not an authentication failure — let it surface as a 500.
+      next(err);
     }
   };
 }

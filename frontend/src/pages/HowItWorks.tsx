@@ -40,14 +40,16 @@ export default function HowItWorks() {
         <section className={cardClass({ padding: 'lg' })}>
           <h2 className="font-semibold text-slate-900 dark:text-slate-50 mb-3">2. Hash-chain — chuỗi băm bất biến</h2>
           <p className="text-sm text-slate-600 dark:text-slate-300 mb-2">
-            Mỗi sự kiện được ký HMAC-SHA256, và chữ ký đó bao gồm cả hash của sự kiện <em>trước đó</em>:
+            Mỗi sự kiện được băm SHA-256, và dữ liệu đem băm bao gồm cả hash của sự kiện <em>trước đó</em>:
           </p>
           <div className="bg-slate-50 dark:bg-slate-800/50 rounded-xl p-3.5 font-mono text-xs text-slate-600 dark:text-slate-300 border border-slate-100 dark:border-slate-700">
-            hash(sự kiện N) = HMAC-SHA256(dữ liệu N + hash(sự kiện N-1), khoá ký riêng)
+            hash(sự kiện N) = SHA-256(JSON chuẩn hoá RFC 8785 của {'{'} dữ liệu N, hash(sự kiện N-1), salt ngẫu nhiên {'}'})
           </div>
           <p className="text-sm text-slate-600 dark:text-slate-300 mt-2">
-            Nếu ai đó sửa dữ liệu của một sự kiện cũ, hash của nó thay đổi — kéo theo mọi hash phía sau đều sai lệch.
-            Hệ thống phát hiện điều này ngay khi tính lại toàn bộ chuỗi.
+            Không cần khoá bí mật nào: bất kỳ ai có dữ liệu sự kiện đều tự tính lại được hash. Nếu ai đó sửa một sự
+            kiện cũ, hash của nó thay đổi — kéo theo mọi hash phía sau đều sai lệch. Cơ sở dữ liệu còn ghi lại{' '}
+            <em>đầu chuỗi</em> (hash cuối cùng và số sự kiện) của mỗi lô, nên việc lén xoá bớt các sự kiện cuối cũng bị
+            phát hiện.
             Bạn có thể tự kiểm chứng bằng <Link to="/verify" className="text-brand-600 dark:text-brand-400 hover:underline font-medium">Công cụ xác minh độc lập</Link>.
           </p>
         </section>

@@ -1,6 +1,5 @@
 import { Router } from 'express';
 import { RecordEventDTO } from '../../domain/types';
-import { IActorRepo } from '../../repository/interfaces';
 import { AuthService } from '../../services/authService';
 import { SupplyChainService } from '../../services/supplyChainService';
 import { requireAuth } from '../middleware/auth';
@@ -11,10 +10,9 @@ import { recordEventSchema } from '../../validation/schemas';
 export function eventRoutes(
   supplyChainService: SupplyChainService,
   authService: AuthService,
-  actorRepo: IActorRepo,
 ): Router {
   const router = Router();
-  router.use(requireAuth(authService, actorRepo));
+  router.use(requireAuth(authService));
 
   router.post(
     '/',

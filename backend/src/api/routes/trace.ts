@@ -1,11 +1,10 @@
 import { Router } from 'express';
-import { IActorRepo } from '../../repository/interfaces';
 import { AuthService } from '../../services/authService';
 import { TraceDirection, TraceService } from '../../services/traceService';
 import { requireAuth } from '../middleware/auth';
 import { asyncHandler } from '../middleware/error';
 
-export function traceRoutes(traceService: TraceService, authService: AuthService, actorRepo: IActorRepo): Router {
+export function traceRoutes(traceService: TraceService, authService: AuthService): Router {
   const router = Router();
 
   // Public — no auth required, powers the QR-scan provenance page.
@@ -24,12 +23,12 @@ export function traceRoutes(traceService: TraceService, authService: AuthService
     }),
   );
 
-  router.use(requireAuth(authService, actorRepo));
+  router.use(requireAuth(authService));
 
   router.get(
     '/:batchId',
     asyncHandler(async (req, res) => {
-      const direction = (req.query.direction as TraceDirection) ?? 'forward';
+      const direction: TraceDirection = req.query.direction === 'backward' ? 'backward' : 'forward';
       res.json(await traceService.trace(req.params.batchId, direction, req.actor!));
     }),
   );

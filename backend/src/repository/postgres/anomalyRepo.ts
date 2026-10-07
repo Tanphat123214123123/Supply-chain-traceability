@@ -1,6 +1,7 @@
-import { Pool } from 'pg';
+import { Database, isUuid } from '../../db/database';
 import { Anomaly, AnomalyListQuery, AnomalySeverity, AnomalyType, PaginatedResult } from '../../domain/types';
 import { IAnomalyRepo } from '../interfaces';
+import { involvesActor, WithTotal } from './sql';
 
 interface AnomalyRow {
   id: string;
@@ -15,6 +16,8 @@ interface AnomalyRow {
   resolved_at: Date | null;
   tenant_id: string;
 }
+
+const COLUMNS = 'a.id, a.batch_id, a.event_id, a.type, a.severity, a.message, a.detected_at, a.resolved, a.resolved_by, a.resolved_at, a.tenant_id';
 
 function toAnomaly(row: AnomalyRow): Anomaly {
   return {
@@ -32,36 +35,50 @@ function toAnomaly(row: AnomalyRow): Anomaly {
   };
 }
 
+const INSERT_SQL = `INSERT INTO anomalies (id, batch_id, event_id, type, severity, message, detected_at, resolved, tenant_id)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, false, $8)`;
+
+function insertParams(anomaly: Anomaly): unknown[] {
+  return [
+    anomaly.id,
+    anomaly.batchId,
+    anomaly.eventId ?? null,
+    anomaly.type,
+    anomaly.severity,
+    anomaly.message,
+    anomaly.detectedAt,
+    anomaly.tenantId,
+  ];
+}
+
 export class PostgresAnomalyRepo implements IAnomalyRepo {
-  constructor(private readonly pool: Pool) {}
+  constructor(private readonly db: Database) {}
 
   async create(anomaly: Anomaly): Promise<Anomaly> {
-    await this.pool.query(
-      `INSERT INTO anomalies (id, batch_id, event_id, type, severity, message, detected_at, resolved, tenant_id)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-      [
-        anomaly.id,
-        anomaly.batchId,
-        anomaly.eventId ?? null,
-        anomaly.type,
-        anomaly.severity,
-        anomaly.message,
-        anomaly.detectedAt,
-        anomaly.resolved,
-        anomaly.tenantId,
-      ],
+    await this.db.query(INSERT_SQL, insertParams(anomaly));
+    return { ...anomaly, resolved: false };
+  }
+
+  async createTamperAlertIfAbsent(anomaly: Anomaly): Promise<Anomaly | null> {
+    const result = await this.db.query(
+      `${INSERT_SQL}
+       ON CONFLICT (batch_id) WHERE type = 'CHAIN_TAMPERED' AND NOT resolved DO NOTHING
+       RETURNING id`,
+      insertParams({ ...anomaly, type: 'CHAIN_TAMPERED' }),
     );
-    return anomaly;
+    return result.rows.length > 0 ? { ...anomaly, type: 'CHAIN_TAMPERED', resolved: false } : null;
   }
 
   async findById(id: string): Promise<Anomaly | null> {
-    const result = await this.pool.query<AnomalyRow>('SELECT * FROM anomalies WHERE id = $1', [id]);
+    if (!isUuid(id)) return null;
+    const result = await this.db.query<AnomalyRow>(`SELECT ${COLUMNS} FROM anomalies a WHERE a.id = $1`, [id]);
     return result.rows[0] ? toAnomaly(result.rows[0]) : null;
   }
 
   async findByBatchId(batchId: string): Promise<Anomaly[]> {
-    const result = await this.pool.query<AnomalyRow>(
-      'SELECT * FROM anomalies WHERE batch_id = $1 ORDER BY detected_at ASC',
+    if (!isUuid(batchId)) return [];
+    const result = await this.db.query<AnomalyRow>(
+      `SELECT ${COLUMNS} FROM anomalies a WHERE a.batch_id = $1 ORDER BY a.detected_at ASC, a.id ASC`,
       [batchId],
     );
     return result.rows.map(toAnomaly);
@@ -71,54 +88,51 @@ export class PostgresAnomalyRepo implements IAnomalyRepo {
     tenantId: string,
     { page, pageSize, resolved, severity }: AnomalyListQuery,
   ): Promise<PaginatedResult<Anomaly>> {
-    const conditions: string[] = ['tenant_id = $1'];
-    const params: unknown[] = [tenantId];
-    if (resolved !== undefined) {
-      params.push(resolved);
-      conditions.push(`resolved = $${params.length}`);
-    }
-    if (severity) {
-      params.push(severity);
-      conditions.push(`severity = $${params.length}`);
-    }
-    const where = `WHERE ${conditions.join(' AND ')}`;
-
     const offset = (page - 1) * pageSize;
-    const rowsResult = await this.pool.query<AnomalyRow>(
-      `SELECT * FROM anomalies ${where} ORDER BY detected_at DESC LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
+    const where = `a.tenant_id = $1
+      AND ($2::boolean IS NULL OR a.resolved = $2)
+      AND ($3::text IS NULL OR a.severity = $3)`;
+    const params = [tenantId, resolved ?? null, severity ?? null];
+
+    const result = await this.db.query<AnomalyRow & WithTotal>(
+      `SELECT ${COLUMNS}, count(*) OVER () AS total_count
+         FROM anomalies a
+        WHERE ${where}
+        ORDER BY a.detected_at DESC, a.id DESC
+        LIMIT $4 OFFSET $5`,
       [...params, pageSize, offset],
     );
-    const countResult = await this.pool.query<{ count: string }>(
-      `SELECT count(*)::text AS count FROM anomalies ${where}`,
-      params,
-    );
 
-    return {
-      items: rowsResult.rows.map(toAnomaly),
-      total: Number(countResult.rows[0]?.count ?? 0),
-      page,
-      pageSize,
-    };
+    let total = result.rows[0] ? Number(result.rows[0].total_count) : 0;
+    if (result.rows.length === 0 && offset > 0) {
+      const count = await this.db.query<{ count: string }>(`SELECT count(*) AS count FROM anomalies a WHERE ${where}`, params);
+      total = Number(count.rows[0].count);
+    }
+    return { items: result.rows.map(toAnomaly), total, page, pageSize };
   }
 
   async resolve(id: string, resolvedBy: string): Promise<Anomaly | null> {
-    const result = await this.pool.query<AnomalyRow>(
-      `UPDATE anomalies SET resolved = true, resolved_by = $2, resolved_at = now() WHERE id = $1 RETURNING *`,
+    if (!isUuid(id)) return null;
+    const result = await this.db.query<AnomalyRow>(
+      `UPDATE anomalies AS a SET resolved = true, resolved_by = $2, resolved_at = now()
+        WHERE a.id = $1 AND NOT a.resolved
+        RETURNING ${COLUMNS}`,
       [id, resolvedBy],
     );
     return result.rows[0] ? toAnomaly(result.rows[0]) : null;
   }
 
-  async countAllByTenant(tenantId: string): Promise<number> {
-    const result = await this.pool.query<{ count: string }>(
-      'SELECT count(*)::text AS count FROM anomalies WHERE tenant_id = $1',
-      [tenantId],
+  async findRecent(tenantId: string, limit: number, involvingActorId?: string): Promise<Anomaly[]> {
+    const result = await this.db.query<AnomalyRow>(
+      `SELECT ${COLUMNS}
+         FROM anomalies a
+        WHERE a.tenant_id = $1
+          AND ($3::uuid IS NULL OR EXISTS (
+                SELECT 1 FROM batches b WHERE b.id = a.batch_id AND ${involvesActor('$3')}))
+        ORDER BY a.detected_at DESC, a.id DESC
+        LIMIT $2`,
+      [tenantId, limit, involvingActorId ?? null],
     );
-    return Number(result.rows[0]?.count ?? 0);
-  }
-
-  async findAllByTenant(tenantId: string): Promise<Anomaly[]> {
-    const result = await this.pool.query<AnomalyRow>('SELECT * FROM anomalies WHERE tenant_id = $1', [tenantId]);
     return result.rows.map(toAnomaly);
   }
 }

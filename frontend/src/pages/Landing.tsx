@@ -10,7 +10,7 @@ const FEATURES: Array<{ icon: LucideIcon; title: string; description: string }> 
   {
     icon: Link2,
     title: 'Chuỗi hash bất biến',
-    description: 'Mỗi sự kiện được ký HMAC-SHA256 nối tiếp — sửa một bản ghi cũ sẽ làm sai lệch toàn bộ chuỗi phía sau, phát hiện được ngay.',
+    description: 'Mỗi sự kiện được băm SHA-256 nối tiếp theo một định dạng công khai — ai cũng tự tính lại được; sửa hay xoá bản ghi cũ đều bị phát hiện ngay.',
   },
   {
     icon: Handshake,

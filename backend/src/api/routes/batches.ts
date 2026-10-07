@@ -2,7 +2,6 @@ import { Router } from 'express';
 import QRCode from 'qrcode';
 import { z } from 'zod';
 import { CreateBatchDTO } from '../../domain/types';
-import { IActorRepo } from '../../repository/interfaces';
 import { AuthService } from '../../services/authService';
 import { SupplyChainService } from '../../services/supplyChainService';
 import { asyncHandler } from '../middleware/error';
@@ -26,11 +25,10 @@ function toCsv(rows: Record<string, unknown>[]): string {
 export function batchRoutes(
   supplyChainService: SupplyChainService,
   authService: AuthService,
-  actorRepo: IActorRepo,
   publicOrigin: string,
 ): Router {
   const router = Router();
-  router.use(requireAuth(authService, actorRepo));
+  router.use(requireAuth(authService));
 
   router.get(
     '/',

@@ -15,6 +15,8 @@ function makeEvent(overrides: Partial<TraceEvent> = {}): TraceEvent {
     hash: 'a'.repeat(64),
     prevHash: '0'.repeat(64),
     sequenceNumber: 0,
+    hashVersion: 2,
+    salt: 'b'.repeat(64),
     ...overrides,
   }
 }

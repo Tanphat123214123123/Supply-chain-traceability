@@ -17,7 +17,7 @@ jobs:
     # starts one through Testcontainers; in CI a service container is faster.
     services:
       postgres:
-        image: postgres:16-alpine
+        image: postgis/postgis:16-3.4-alpine
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
@@ -40,8 +40,47 @@ jobs:
           cache-dependency-path: backend/package-lock.json
       - run: npm ci
       - run: npm run typecheck
-      - run: npm test
+      # A real EVM node for the live anchoring test (tests/anchorChain.integration.test.ts).
+      - name: Start anvil and deploy TraceAnchor
+        run: |
+          docker run -d --name anvil -p 8545:8545 ghcr.io/foundry-rs/foundry:stable "anvil --host 0.0.0.0 --chain-id 31337"
+          npx ts-node --transpile-only src/anchor/deployLocal.ts
+        env:
+          ANCHOR_RPC_URL: http://127.0.0.1:8545
+          ANCHOR_CONTRACT: '0x5FbDB2315678afecb367f032d93F642f64180aa3'
+          # anvil's public, well-known dev key #0 — local chain only.
+          ANCHOR_PRIVATE_KEY: '0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80'
+      - run: npm test -- --forceExit
+        env:
+          ANCHOR_IT_RPC_URL: http://127.0.0.1:8545
+      # The published spec vectors must match what the code computes.
+      - name: Test vectors are up to date
+        run: |
+          npx ts-node --transpile-only scripts/generate-test-vectors.ts
+          git diff --exit-code -- ../docs/test-vectors
       - run: npm run build
+
+  contracts:
+    name: Contracts (test + coverage)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: contracts
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: contracts/package-lock.json
+      - run: npm ci
+      - run: npm test
+      - run: npm run coverage
+      # The ABI/bytecode the apps use must come from this exact source.
+      - name: Exported artifact is up to date
+        run: |
+          npm run export-artifact
+          git diff --exit-code -- ../backend/src/anchor/TraceAnchor.artifact.json ../frontend/src/lib/verify/traceAnchorAbi.ts
 
   frontend:
     name: Frontend (test + build)

@@ -12,6 +12,16 @@ Hệ thống quản lý và truy xuất nguồn gốc sản phẩm trong chuỗi
 - **Thu hồi lô hàng** — block mọi sự kiện mới khi lô đã bị thu hồi
 - **Trang công khai** — người tiêu dùng quét QR, xem nguồn gốc không cần đăng nhập
 
+## Giai đoạn 1: chuỗi nhiều bên, kiểm chứng trên blockchain
+
+- **Gộp / tách / chế biến lô** (kiểu GS1 EPCIS) — truy ngược từ một container về từng lô đất
+- **Vùng trồng có toạ độ** (PostGIS) — ranh giới hoặc điểm, xuất GeoJSON theo yêu cầu EUDR
+- **Cân bằng khối lượng** — phát hiện chế biến "ra nhiều hơn vào" và lô đất khai vượt năng suất
+- **Neo Merkle root lên blockchain** (hợp đồng `TraceAnchor`) — trang `/verify` tự đối chiếu với chain, không cần tin máy chủ
+- **Tiết lộ chọn lọc** (hash v3) — công khai mà không lộ dữ liệu nội bộ; link kiểm chứng đầy đủ có thời hạn cho kiểm toán viên
+
+Chi tiết: [docs/PHASE1.md](docs/PHASE1.md) · Đặc tả: [docs/SPEC_PHASE1.md](docs/SPEC_PHASE1.md)
+
 ## Cấu trúc dự án
 
 ```
@@ -20,7 +30,8 @@ tracechain/
 │   ├── src/
 │   │   ├── domain/types.ts     # Domain model
 │   │   ├── db/                 # Kết nối, transaction theo tenant, migrator
-│   │   ├── ledger/             # Hash-chain + chuẩn hoá JSON RFC 8785
+│   │   ├── ledger/             # Hash-chain (v3 tiết lộ chọn lọc), cây Merkle, JCS RFC 8785
+│   │   ├── anchor/             # Worker neo Merkle root lên blockchain
 │   │   ├── repository/         # Tầng lưu trữ PostgreSQL
 │   │   ├── services/           # Business logic
 │   │   └── api/                # HTTP routes + middleware
@@ -29,27 +40,29 @@ tracechain/
 ├── frontend/                   # React 18 + Vite + Tailwind CSS
 │   └── src/
 │       ├── pages/              # Login, Dashboard, RecordEvent, BatchDetail, Provenance
-│       ├── components/         # Timeline, EventForm, VerifyBadge, QRScanner
+│       ├── components/         # Timeline, LineagePanel, VerifyPanel, RecallDialog...
+│       ├── lib/verify/         # Bộ xác minh chạy trên trình duyệt (hash, Merkle, đọc hợp đồng)
 │       ├── context/            # AuthContext (JWT)
 │       └── api/client.ts       # REST client + domain types
-├── docs/                       # Tài liệu dự án
+├── contracts/                  # Hợp đồng TraceAnchor (Solidity + Hardhat)
+├── docs/                       # Tài liệu dự án, đặc tả, test vector
 ├── docker-compose.yml
 └── .gitignore
 ```
 
 ## Chạy nhanh
 
-### Cách nhanh nhất: Docker Compose (PostgreSQL + migrate + backend + frontend)
+### Cách nhanh nhất: Docker Compose
 
 ```bash
 docker compose up --build
 ```
 
-Mở http://localhost:5173 và đăng nhập bằng tài khoản demo bên dưới.
+Lệnh này dựng PostgreSQL + PostGIS, chạy migration, một chuỗi EVM cục bộ (`anvil`, cổng 8545) cùng hợp đồng `TraceAnchor`, backend (kèm worker neo) và frontend. Mở http://localhost:5173 và đăng nhập bằng tài khoản demo bên dưới. Neo lên testnet công khai: xem [docs/PHASE1.md](docs/PHASE1.md#trien-khai-len-testnet).
 
 ### Backend chạy ngoài Docker
 
-Cần một PostgreSQL 16, ví dụ chỉ bật service `postgres`: `docker compose up -d postgres`. Service này mở ra máy bạn ở cổng **55432**, không dùng 5432 để tránh đụng PostgreSQL cài sẵn trên máy; đổi được bằng biến `POSTGRES_HOST_PORT`.
+Cần PostgreSQL 16 có PostGIS, ví dụ chỉ bật service `postgres`: `docker compose up -d postgres`. Service này mở ra máy bạn ở cổng **55432**, không dùng 5432 để tránh đụng PostgreSQL cài sẵn trên máy; đổi được bằng biến `POSTGRES_HOST_PORT`.
 
 ```bash
 cd backend

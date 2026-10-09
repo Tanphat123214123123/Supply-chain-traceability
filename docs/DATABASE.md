@@ -39,6 +39,13 @@ node dist/db/migrate.js  # production / container
 | 007 | Hash v2, head của chuỗi trên `batches`, trigger kiểm tra liên kết khi INSERT, trigger chỉ-ghi-thêm (append-only) |
 | 008 | Index theo đúng các truy vấn thực tế (tenant + thời gian, trigram cho tìm kiếm) |
 | 009 | Role `tracechain_app`, quyền theo từng cột, RLS, các hàm `SECURITY DEFINER` |
+| 010 | Lời mời (`invitations`): đăng ký bằng mã mời, vai trò lấy từ lời mời |
+| 011 | Hash v3 (cột `kind`, `links`, `claim_salts`); bảng `transformations`, `transformation_inputs`, `transformation_outputs`; `batches.consumed_quantity`; cảnh báo `MASS_BALANCE_VIOLATION` |
+| 012 | Neo blockchain: `anchors` (root, giao dịch, trạng thái) và `anchor_leaves` (vị trí lá + bằng chứng Merkle) |
+| 013 | PostGIS: bảng `plots` (đa giác hoặc điểm, diện tích, ràng buộc EUDR), `batches.plot_id` |
+| 014 | Dữ liệu tham chiếu cân bằng khối lượng: `conversion_factors`, `yield_caps` |
+
+Từ migration 013, database cần image **`postgis/postgis:16-3.4-alpine`** (docker-compose, Testcontainers và CI đều đã dùng image này).
 
 ## 3. Bảo đảm do database thực thi
 
@@ -81,12 +88,16 @@ Các bảo đảm dưới đây vẫn đúng **kể cả khi code ứng dụng c
   - Sửa nội dung một event: lần quét toàn vẹn kế tiếp sẽ phát hiện.
   - Xóa các event cuối mà **không** sửa head: cũng bị phát hiện, vì chuỗi không còn khớp với head.
   - Nhưng một superuser đủ kiên nhẫn có thể **viết lại toàn bộ chuỗi lẫn head cho khớp nhau**. Hash v2 không dùng bí mật, nên không gì trong database ngăn được việc này.
-- Đó chính là việc của **giai đoạn 1: neo Merkle root lên blockchain công khai**. Khi đã neo, việc viết lại chuỗi sẽ mâu thuẫn với dữ liệu đã nằm trên chain, và ai cũng kiểm tra được.
+- Đó chính là việc của **giai đoạn 1: neo Merkle root lên blockchain công khai** (đã làm — migration 012, xem [PHASE1.md](PHASE1.md)). Khi đã neo, việc viết lại chuỗi sẽ mâu thuẫn với root đã nằm trên chain, và ai cũng kiểm tra được. Test `fraudScenarios.test.ts` mô phỏng đúng kẻ tấn công này: viết lại cả chuỗi, head lẫn cây Merkle trong DB — chỉ đối chiếu với chain mới phát hiện.
 - Hash chain chỉ chứng minh dữ liệu **không bị sửa sau khi ghi**. Nó không chứng minh dữ liệu **đúng ngay lúc nhập**. Phần đó cần cân bằng khối lượng và bằng chứng hiện trường, thuộc giai đoạn 1 và 2.
 
 ## 4. Đặc tả hash sự kiện
 
-### v2 (từ migration 007, mặc định cho mọi event mới)
+### v3 (từ migration 011, mặc định cho mọi event mới)
+
+Cam kết theo từng trường để **tiết lộ chọn lọc**: trang công khai chỉ mở các trường được công bố, các trường nội bộ chỉ còn mã cam kết, nhưng người ngoài vẫn tính lại được hash. Đặc tả đầy đủ, cây Merkle và hợp đồng neo: **[SPEC_PHASE1.md](SPEC_PHASE1.md)**; bộ test vector: [test-vectors/phase1.json](test-vectors/phase1.json).
+
+### v2 (migration 007 đến 010)
 
 ```
 hash = hex( SHA-256( UTF-8( JCS(preimage) ) ) )
@@ -111,7 +122,7 @@ hash = hex( SHA-256( UTF-8( JCS(preimage) ) ) )
 
 Cách tự xác minh một lô hàng:
 
-1. Gọi `GET /api/trace/public/{batchId}/full`. Endpoint này công khai và trả về đủ mọi trường kể cả `salt`.
+1. Lấy dữ liệu event và `salt`. **Từ giai đoạn 1**, endpoint công khai `GET /api/trace/public/{batchId}/full` không còn trả nội dung event v2; nội dung chỉ có qua link kiểm chứng (`?token=…`, xem SPEC_PHASE1.md §6).
 2. Với từng event, dựng `preimage` như bảng trên, chuẩn hóa bằng JCS rồi tính SHA-256. Kết quả phải bằng `hash`.
 3. Kiểm tra `prevHash` của mỗi event bằng `hash` của event trước, và `sequenceNumber` liên tục từ 0.
 4. So hash cuối cùng và số event với `headHash` / `eventCount` của lô.

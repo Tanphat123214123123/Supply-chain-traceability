@@ -11,9 +11,11 @@
     │     └── /record?batchId=…  ← Xử lý lô: form đúng khâu tiếp theo
     ├── /batches/new      ← Tạo lô + ghi thu hoạch (Nông dân, Quản trị viên)
     ├── /batch/:id        ← Chi tiết, tiến độ, timeline, xuất báo cáo, thu hồi
+    ├── /lots/transform   ← Gộp / tách / chế biến lô (Nhà chế biến, Nhà phân phối, Quản trị viên)
+    ├── /plots            ← Vùng trồng: bản đồ, nhập GeoJSON/KML, thêm điểm < 4 ha
     └── /actors           ← Đối tác; Quản trị viên mời thành viên tại đây
 /provenance/:id  ← Công khai, không cần đăng nhập (QR)
-/verify?batch=…  ← Tự kiểm chứng chuỗi băm
+/verify?batch=…  ← Xác minh độc lập trên trình duyệt: tự tính mã băm, đối chiếu blockchain (`&token=` = link kiểm chứng đầy đủ)
 ```
 
 ---
@@ -139,3 +141,18 @@ Tất cả: danh sách tổ chức và tài khoản. Quản trị viên: mời t
 | `InvitePanel`      | Đối tác (Quản trị viên) |
 | `VerifyBadge`      | Chi tiết lô — "Dữ liệu nguyên vẹn" / "Có bất thường" / "Chuỗi bị can thiệp" |
 | `QRScanner`        | `/scan` |
+
+---
+
+## 12. Màn hình giai đoạn 1
+
+| Màn hình | Nội dung chính |
+|---|---|
+| `/lots/transform` | Chọn loại (gộp / tách / chế biến), chọn lô đầu vào đang giữ kèm số lượng còn lại, khai báo lô đầu ra; ước tính cân bằng khối lượng trực tiếp; giữ lại hoặc giao cho người làm cùng khâu / khâu kế |
+| `/plots` | Bản đồ OpenStreetMap các lô đất; nhập tệp GeoJSON/KML (ranh giới); bấm bản đồ để thêm lô dưới 4 ha dạng điểm; bảng mã, tên, diện tích |
+| Chi tiết lô — *Phả hệ lô hàng* | Lô nguồn, lô đã tạo ra, phần đã chuyển; tải GeoJSON vùng trồng (EUDR) |
+| Chi tiết lô — *Bàn giao lô* | Khi đang giữ lô nhưng khâu kế do người khác làm |
+| Chi tiết lô — *Kiểm chứng độc lập* | Mở trang xác minh; tạo link kiểm chứng đầy đủ 1–30 ngày cho kiểm toán viên |
+| `/verify` | Kết luận *Đã xác minh / Chưa đóng dấu đủ / Phát hiện sai lệch*; mỗi sự kiện: nội dung khớp, liên kết chuỗi, đã neo (thời điểm, khối); địa chỉ hợp đồng; "Kiểm tra lại" không gọi máy chủ |
+| Trang công khai — *Nguồn gốc* | Số lô thu hoạch, số lô đất, vùng trồng, đơn vị sản xuất (không lộ tên cá nhân) |
+

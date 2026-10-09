@@ -21,13 +21,15 @@ export interface BatchRow {
   head_hash: string;
   event_count: number;
   last_event_at: Date | null;
+  consumed_quantity: string;
+  plot_id: string | null;
 }
 
 // last_event_at rides on the UNIQUE (batch_id, sequence_number) index: the
 // newest event is the one with the highest sequence number.
 export const BATCH_COLUMNS = `b.id, b.product_name, b.product_type, b.origin, b.quantity, b.unit, b.created_at, b.created_by,
   b.tenant_id, b.current_stage, b.is_recalled, b.recall_reason, b.metadata, b.assigned_to_actor_id,
-  b.head_hash, b.event_count,
+  b.head_hash, b.event_count, b.consumed_quantity, b.plot_id,
   (SELECT le.timestamp FROM trace_events le WHERE le.batch_id = b.id
     ORDER BY le.sequence_number DESC LIMIT 1) AS last_event_at`;
 
@@ -50,6 +52,8 @@ export function toBatch(row: BatchRow): Batch {
     headHash: row.head_hash,
     eventCount: row.event_count,
     lastEventAt: row.last_event_at ?? undefined,
+    consumedQuantity: Number(row.consumed_quantity),
+    plotId: row.plot_id ?? undefined,
   };
 }
 
@@ -61,8 +65,8 @@ export class PostgresBatchRepo implements IBatchRepo {
     // defaults (genesis, 0) and only the ledger trigger may advance them.
     const result = await this.db.query<BatchRow>(
       `INSERT INTO batches AS b (id, product_name, product_type, origin, quantity, unit, created_at, created_by,
-                                 tenant_id, current_stage, is_recalled, recall_reason, metadata, assigned_to_actor_id)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+                                 tenant_id, current_stage, is_recalled, recall_reason, metadata, assigned_to_actor_id, plot_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
        RETURNING ${BATCH_COLUMNS}`,
       [
         batch.id,
@@ -79,6 +83,7 @@ export class PostgresBatchRepo implements IBatchRepo {
         batch.recallReason ?? null,
         JSON.stringify(batch.metadata ?? {}),
         batch.assignedToActorId ?? null,
+        batch.plotId ?? null,
       ],
     );
     return toBatch(result.rows[0]);
@@ -88,6 +93,13 @@ export class PostgresBatchRepo implements IBatchRepo {
     if (!isUuid(id)) return null;
     const result = await this.db.query<BatchRow>(`SELECT ${BATCH_COLUMNS} FROM batches b WHERE b.id = $1`, [id]);
     return result.rows[0] ? toBatch(result.rows[0]) : null;
+  }
+
+  async findByIds(ids: string[]): Promise<Batch[]> {
+    const valid = ids.filter(isUuid);
+    if (valid.length === 0) return [];
+    const result = await this.db.query<BatchRow>(`SELECT ${BATCH_COLUMNS} FROM batches b WHERE b.id = ANY ($1::uuid[])`, [valid]);
+    return result.rows.map(toBatch);
   }
 
   async findByIdForUpdate(id: string): Promise<Batch | null> {
@@ -181,10 +193,32 @@ export class PostgresBatchRepo implements IBatchRepo {
          FROM batches b
         WHERE b.tenant_id = $1
           AND NOT b.is_recalled
-          AND ($2::text[])[COALESCE(array_position($2::text[], b.current_stage), 0) + 1] = ANY ($3::text[])
-          AND ($5 OR b.assigned_to_actor_id IS NULL OR b.assigned_to_actor_id = $4)
+          AND b.consumed_quantity < b.quantity
+          AND (
+                -- next stage is mine and the lot is mine (or unclaimed)
+                (($2::text[])[COALESCE(array_position($2::text[], b.current_stage), 0) + 1] = ANY ($3::text[])
+                 AND ($5 OR b.assigned_to_actor_id IS NULL OR b.assigned_to_actor_id = $4))
+                -- or I hold it but someone else must do the next stage: it waits on my hand-off
+                OR (b.assigned_to_actor_id = $4 AND b.current_stage IS DISTINCT FROM 'RETAIL' AND b.event_count > 0)
+              )
         ORDER BY b.created_at DESC, b.id DESC`,
       [tenantId, STAGE_ORDER, allowedStages, actorId, isAdmin],
+    );
+    return result.rows.map(toBatch);
+  }
+
+  async findInCustody(tenantId: string, actorId: string, isAdmin: boolean): Promise<Batch[]> {
+    const result = await this.db.query<BatchRow>(
+      `SELECT ${BATCH_COLUMNS}
+         FROM batches b
+        WHERE b.tenant_id = $1
+          AND NOT b.is_recalled
+          AND b.event_count > 0
+          AND b.consumed_quantity < b.quantity
+          AND ($3 OR b.assigned_to_actor_id = $2)
+        ORDER BY b.created_at DESC, b.id DESC
+        LIMIT 1000`,
+      [tenantId, actorId, isAdmin],
     );
     return result.rows.map(toBatch);
   }
@@ -218,6 +252,10 @@ export class PostgresBatchRepo implements IBatchRepo {
       stage,
       assignedToActorId,
     ]);
+  }
+
+  async reassign(id: string, assignedToActorId: string): Promise<void> {
+    await this.db.query('UPDATE batches SET assigned_to_actor_id = $2 WHERE id = $1', [id, assignedToActorId]);
   }
 
   async markRecalled(id: string, reason: string): Promise<Batch | null> {

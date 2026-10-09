@@ -30,7 +30,7 @@ describe('SupplyChainService', () => {
     });
   });
 
-  it('records a v2 event, advances the stage and hands custody to the named next actor', async () => {
+  it('records a v3 event, advances the stage and hands custody to the named next actor', async () => {
     const { farmer, processor, svc } = await setup(getDb());
     const batch = await svc.createBatch(farmer, sampleBatch);
     const event = await svc.recordEvent(farmer, {
@@ -40,8 +40,8 @@ describe('SupplyChainService', () => {
       data: { moisture: 12.5, lot: 'A-1' },
       assignNextTo: processor.id,
     });
-    expect(event).toMatchObject({ sequenceNumber: 0, hashVersion: 2, prevHash: '0'.repeat(64) });
-    expect(event.salt).toMatch(/^[0-9a-f]{64}$/);
+    expect(event).toMatchObject({ sequenceNumber: 0, hashVersion: 3, prevHash: '0'.repeat(64), kind: 'OBSERVE' });
+    expect(Object.values(event.claimSalts!).every((s) => /^[0-9a-f]{64}$/.test(s))).toBe(true);
 
     const updated = await svc.getBatch(farmer, batch.id);
     expect(updated).toMatchObject({

@@ -1,5 +1,5 @@
 import { Database, isUuid } from '../../db/database';
-import { SupplyChainStage, TraceEvent } from '../../domain/types';
+import { EventKind, EventLink, SupplyChainStage, TraceEvent } from '../../domain/types';
 import { IEventRepo } from '../interfaces';
 
 interface EventRow {
@@ -17,10 +17,13 @@ interface EventRow {
   sequence_number: number;
   hash_version: number;
   salt: string | null;
+  kind: EventKind;
+  links: EventLink[];
+  claim_salts: Record<string, string> | null;
 }
 
 const COLUMNS =
-  'id, batch_id, tenant_id, stage, actor_id, timestamp, location, notes, data, hash, prev_hash, sequence_number, hash_version, salt';
+  'id, batch_id, tenant_id, stage, actor_id, timestamp, location, notes, data, hash, prev_hash, sequence_number, hash_version, salt, kind, links, claim_salts';
 
 export function toEvent(row: EventRow): TraceEvent {
   return {
@@ -36,8 +39,11 @@ export function toEvent(row: EventRow): TraceEvent {
     hash: row.hash,
     prevHash: row.prev_hash,
     sequenceNumber: row.sequence_number,
-    hashVersion: row.hash_version === 2 ? 2 : 1,
+    hashVersion: row.hash_version === 3 ? 3 : row.hash_version === 2 ? 2 : 1,
     salt: row.salt ?? undefined,
+    kind: row.kind,
+    links: row.links.map((l) => ({ ...l, quantity: Number(l.quantity) })),
+    claimSalts: row.claim_salts ?? undefined,
   };
 }
 
@@ -52,8 +58,8 @@ export class PostgresEventRepo implements IEventRepo {
   async create(event: TraceEvent): Promise<TraceEvent> {
     await this.db.query(
       `INSERT INTO trace_events (id, batch_id, tenant_id, stage, actor_id, timestamp, location, notes, data,
-                                 hash, prev_hash, sequence_number, hash_version, salt)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
+                                 hash, prev_hash, sequence_number, hash_version, salt, kind, links, claim_salts)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)`,
       [
         event.id,
         event.batchId,
@@ -69,6 +75,9 @@ export class PostgresEventRepo implements IEventRepo {
         event.sequenceNumber,
         event.hashVersion,
         event.salt ?? null,
+        event.kind,
+        JSON.stringify(event.links),
+        event.claimSalts ? JSON.stringify(event.claimSalts) : null,
       ],
     );
     return event;

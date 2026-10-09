@@ -23,7 +23,11 @@ declare global {
 export default async function globalSetup(globalConfig: { maxWorkers: number }): Promise<void> {
   let adminUrl = process.env.TEST_DATABASE_URL;
   if (!adminUrl) {
-    const container = await new PostgreSqlContainer('postgres:16-alpine').start();
+    // Each Jest worker holds ~12 connections (app pool + owner pool); the
+    // default max_connections=100 runs out once there are many test files.
+    const container = await new PostgreSqlContainer('postgis/postgis:16-3.4-alpine')
+      .withCommand(['postgres', '-c', 'max_connections=400'])
+      .start();
     globalThis.__TC_PG_CONTAINER__ = container;
     adminUrl = container.getConnectionUri();
   }

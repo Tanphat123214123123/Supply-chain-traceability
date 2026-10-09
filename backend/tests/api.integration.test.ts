@@ -91,7 +91,8 @@ describe('API route wiring', () => {
 
     const res = await request(app).get(`/api/trace/public/${create.body.id}/full`);
     expect(res.status).toBe(200);
-    expect(res.body.valid).toBe(true);
+    expect(res.body.access).toBe('public');
+    expect(res.body.serverCheck.valid).toBe(true);
     expect(res.body.events).toHaveLength(1);
   });
 
@@ -646,10 +647,27 @@ describe('API route wiring', () => {
 
     const res = await request(app).get(`/api/trace/public/${create.body.id}/full`);
     expect(res.status).toBe(200);
-    expect(res.body).toMatchObject({ valid: true, headMatches: true, legacyEventCount: 0 });
-    expect(res.body.events[0]).toMatchObject({ hashVersion: 2 });
-    expect(res.body.events[0].salt).toMatch(/^[0-9a-f]{64}$/);
-    expect(res.body.events[0].tenantId).toBeUndefined();
+    expect(res.body.serverCheck).toMatchObject({ valid: true, headMatches: true });
+    expect(res.body.events[0]).toMatchObject({ hashVersion: 3 });
+    // Nothing internal leaves the tenant on the public route.
+    for (const field of ['tenantId', 'actorId', 'notes', 'data', 'salt', 'claimSalts']) {
+      expect(res.body.events[0]).not.toHaveProperty(field);
+    }
+    expect(JSON.stringify(res.body)).not.toContain(admin.tenantId);
+
+    // A verification link (created by a tenant member) opens everything.
+    const link = await request(app)
+      .post(`/api/trace/${create.body.id}/verification-links`)
+      .set('Authorization', `Bearer ${farmerToken}`)
+      .send({ days: 3 });
+    expect(link.status).toBe(201);
+    const full = await request(app).get(`/api/trace/public/${create.body.id}/full`).query({ token: link.body.token });
+    expect(full.body.access).toBe('full');
+    expect(full.body.events[0].disclosure.hidden).toHaveLength(0);
+
+    // ...but not anonymously, and not with a forged token.
+    expect((await request(app).post(`/api/trace/${create.body.id}/verification-links`).send({ days: 3 })).status).toBe(401);
+    expect((await request(app).get(`/api/trace/public/${create.body.id}/full`).query({ token: 'x' })).status).toBe(403);
   });
 
   describe('tenant isolation', () => {

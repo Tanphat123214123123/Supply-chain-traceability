@@ -11,4 +11,6 @@ module.exports = {
   globalSetup: '<rootDir>/tests/setup/globalSetup.ts',
   globalTeardown: '<rootDir>/tests/setup/globalTeardown.ts',
   testTimeout: 30_000,
+  // Every worker gets its own database; more than a handful just contend for the one server.
+  maxWorkers: 4,
 };

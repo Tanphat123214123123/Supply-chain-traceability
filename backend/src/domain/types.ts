@@ -83,6 +83,24 @@ export interface Batch {
   eventCount: number;
   /** Timestamp of the most recent event, derived on read — undefined while no event exists yet. */
   lastEventAt?: Date;
+  /** How much of `quantity` (same unit) later merges/splits/transforms have taken. */
+  consumedQuantity: number;
+  /** The plot (field) a harvest lot was picked from — the root of EUDR geolocation. */
+  plotId?: string;
+}
+
+/** EPCIS-style event kinds — see docs/SPEC_PHASE1.md §3. */
+export type EventKind = 'OBSERVE' | 'MERGE' | 'SPLIT' | 'TRANSFORM';
+export type TransformationKind = Exclude<EventKind, 'OBSERVE'>;
+
+/** An upstream lot consumed by the first event of a lot created by merge/split/transform. Part of the v3 hash. */
+export interface EventLink {
+  lotId: string;
+  quantity: number;
+  unit: string;
+  /** Head of the input lot's chain at the moment it was consumed. */
+  headHash: string;
+  eventCount: number;
 }
 
 export interface TraceEvent {
@@ -98,15 +116,24 @@ export interface TraceEvent {
   hash: string;
   prevHash: string;
   sequenceNumber: number;
-  /** 1 = legacy HMAC (server-verifiable only), 2 = public salted SHA-256 — see ledger/hashChain.ts. */
-  hashVersion: 1 | 2;
-  /** Per-event random salt, part of the v2 hash preimage. Absent on v1 events. */
+  /**
+   * 1 = legacy HMAC (server-verifiable only), 2 = public salted SHA-256 over
+   * the whole event, 3 = per-field commitments (selective disclosure) — see
+   * ledger/hashChain.ts and docs/SPEC_PHASE1.md §1.
+   */
+  hashVersion: 1 | 2 | 3;
+  /** Per-event random salt, part of the v2 hash preimage. Absent on v1/v3 events. */
   salt?: string;
+  kind: EventKind;
+  /** Consumed input lots — non-empty only on the first event of a merged/split/transformed lot. */
+  links: EventLink[];
+  /** v3 only: one 256-bit salt per committed field (claim name → hex). */
+  claimSalts?: Record<string, string>;
 }
 
 export type AnomalySeverity = 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
 
-export type AnomalyType = 'STAGE_SKIPPED' | 'DUPLICATE_STAGE' | 'OUT_OF_ORDER' | 'CHAIN_TAMPERED';
+export type AnomalyType = 'STAGE_SKIPPED' | 'DUPLICATE_STAGE' | 'OUT_OF_ORDER' | 'CHAIN_TAMPERED' | 'MASS_BALANCE_VIOLATION';
 
 export interface Anomaly {
   id: string;
@@ -145,6 +172,19 @@ export interface PublicTrace {
   isValid: boolean;
   hasAnomalies: boolean;
   journey: PublicJourneyStep[];
+  /** Set when the lot was assembled from other lots: how many harvests feed it, from where, by whom. */
+  origins?: PublicOrigins;
+}
+
+export interface PublicOrigins {
+  harvestLotCount: number;
+  /** Distinct places the harvests came from (lot origins), most frequent first. */
+  regions: string[];
+  /** Organizations that grew them. */
+  producers: string[];
+  plotCount: number;
+  /** The merges/splits/transforms along the way, oldest first. */
+  steps: Array<{ kind: TransformationKind; at: Date; inputCount: number }>;
 }
 
 /**
@@ -233,6 +273,38 @@ export interface CreateBatchDTO {
   quantity: number;
   unit: string;
   metadata?: Record<string, unknown>;
+  /** The plot (field) this harvest comes from. */
+  plotId?: string;
+}
+
+/** Merge / split / transform lots — docs/SPEC_PHASE1.md §3. */
+export interface CreateTransformationDTO {
+  kind: TransformationKind;
+  /** The stage this happens at — must be one the actor's role may record. */
+  stage: SupplyChainStage;
+  location: string;
+  notes?: string;
+  data?: Record<string, string | number | boolean>;
+  inputs: Array<{ lotId: string; quantity: number }>;
+  outputs: Array<{ productName: string; productType: string; quantity: number; unit: string }>;
+  /** Who takes the output lots next — someone working this stage or the next; omitted = the actor keeps them. */
+  assignNextTo?: string;
+}
+
+export interface TransformationResult {
+  transformationId: string;
+  outputs: Batch[];
+  anomalies: Anomaly[];
+}
+
+export interface LineageGraph {
+  lotId: string;
+  /** Every lot that appears in the graph (including `lotId`), keyed by id. */
+  lots: Record<string, Pick<Batch, 'id' | 'productName' | 'productType' | 'origin' | 'quantity' | 'unit' | 'currentStage' | 'isRecalled' | 'plotId' | 'consumedQuantity'>>;
+  upstream: Array<{ transformationId: string; kind: TransformationKind; fromLotId: string; toLotId: string; quantity: number; unit: string; createdAt: Date }>;
+  downstream: Array<{ transformationId: string; kind: TransformationKind; fromLotId: string; toLotId: string; quantity: number; unit: string; createdAt: Date }>;
+  /** Upstream lots not produced by any transformation — where the goods entered the system (harvests). */
+  rootLotIds: string[];
 }
 
 export interface RecordEventDTO {

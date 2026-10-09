@@ -15,8 +15,11 @@ export function detectAnomalies(events: TraceEvent[]): DetectedAnomaly[] {
   const seenStages = new Set<string>();
   let highestStageIndex = -1;
 
-  for (const event of events) {
+  for (const [i, event] of events.entries()) {
     const stageIndex = STAGE_ORDER.indexOf(event.stage);
+    // A lot born from a merge/split/transform inherits its inputs' history:
+    // starting at, say, PROCESSING is not a skipped HARVEST.
+    if (i === 0 && event.kind !== undefined && event.kind !== 'OBSERVE') highestStageIndex = stageIndex - 1;
 
     if (seenStages.has(event.stage)) {
       anomalies.push({

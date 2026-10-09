@@ -57,6 +57,62 @@ export const createBatchSchema = z.object({
   quantity: z.number().finite().positive(),
   unit: z.string().trim().min(1).max(50),
   metadata: z.record(z.string(), z.unknown()).optional(),
+  plotId: z.string().uuid().optional(),
+});
+
+const stageEnum = z.enum(['HARVEST', 'PROCESSING', 'QUALITY_CHECK', 'PACKAGING', 'DISTRIBUTION', 'RETAIL']);
+const scalar = z.union([z.string().trim().max(500), z.number().finite(), z.boolean()]);
+
+export const createTransformationSchema = z.object({
+  kind: z.enum(['MERGE', 'SPLIT', 'TRANSFORM']),
+  stage: stageEnum,
+  location: z.string().trim().min(1).max(200),
+  notes: z.string().trim().max(2000).optional(),
+  data: z.record(z.string().regex(/^[a-zA-Z][a-zA-Z0-9]{0,39}$/), scalar).optional(),
+  inputs: z
+    .array(z.object({ lotId: z.string().uuid(), quantity: z.number().finite().positive() }))
+    .min(1)
+    .max(500),
+  outputs: z
+    .array(
+      z.object({
+        productName: z.string().trim().min(1).max(200),
+        productType: z.string().trim().min(1).max(200),
+        quantity: z.number().finite().positive(),
+        unit: z.string().trim().min(1).max(50),
+      }),
+    )
+    .min(1)
+    .max(50),
+  assignNextTo: z.string().uuid().optional(),
+});
+
+const position = z.array(z.number().finite()).min(2).max(3);
+const ring = z.array(position).min(4);
+export const geometrySchema = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('Point'), coordinates: position }),
+  z.object({ type: z.literal('Polygon'), coordinates: z.array(ring).min(1) }),
+  z.object({ type: z.literal('MultiPolygon'), coordinates: z.array(z.array(ring).min(1)).min(1) }),
+]);
+
+export const createPlotSchema = z.object({
+  code: z.string().trim().min(1).max(60),
+  name: z.string().trim().min(1).max(200),
+  geometry: geometrySchema,
+  declaredAreaHa: z.number().finite().positive().max(100000).optional(),
+  ownerActorId: z.string().uuid().optional(),
+});
+
+export const importPlotsSchema = z.object({
+  type: z.literal('FeatureCollection'),
+  features: z
+    .array(z.object({ type: z.literal('Feature').optional(), geometry: geometrySchema, properties: z.record(z.string(), z.unknown()).nullish() }))
+    .min(1)
+    .max(1000),
+});
+
+export const handOffSchema = z.object({
+  assignNextTo: z.string().uuid(),
 });
 
 export const recallBatchSchema = z.object({
@@ -130,3 +186,16 @@ export const exportBatchesQuerySchema = z.object({
   origin: z.string().trim().max(200).optional(),
   format: z.enum(['csv', 'json']).default('csv'),
 });
+
+export const verificationLinkSchema = z.object({
+  days: z.number().int().min(1).max(30).default(7),
+});
+
+export const reportQuerySchema = z
+  .object({
+    from: z.coerce.date().optional(),
+    to: z.coerce.date().optional(),
+    productType: z.string().trim().min(1).max(200).optional(),
+    origin: z.string().trim().min(1).max(200).optional(),
+  })
+  .refine((q) => !q.from || !q.to || q.from < q.to, 'from must be before to');

@@ -1,8 +1,9 @@
 import { createHash } from 'crypto';
 import { v4 as uuidv4 } from 'uuid';
 import { canonicalize } from '../src/ledger/canonicalJson';
-import { computeEventHashV1, GENESIS_HASH } from '../src/ledger/hashChain';
-import { asAttacker, createActor, createTenant, sampleBatch, TestDb, TEST_LEGACY_KEY, useTestDatabase } from './helpers/testDb';
+import jwt from 'jsonwebtoken';
+import { computeEventHashV1, GENESIS_HASH, hashOfDisclosure } from '../src/ledger/hashChain';
+import { asAttacker, createActor, createTenant, sampleBatch, TestDb, TEST_JWT_SECRET, TEST_LEGACY_KEY, useTestDatabase } from './helpers/testDb';
 
 const getDb = useTestDatabase();
 
@@ -37,8 +38,13 @@ describe('TraceService', () => {
     await asAttacker(t, "UPDATE trace_events SET location = 'TAMPERED' WHERE batch_id = $1 AND sequence_number = 0", [batch.id]);
 
     expect((await t.ctx.traceService.trace(batch.id, 'forward', farmer)).isValid).toBe(false);
-    const full = await t.ctx.traceService.verifyPublic(batch.id);
-    expect(full).toMatchObject({ valid: false, brokenAtIndex: 0, problem: 'TAMPERED_EVENT' });
+    // Public access: the opened "location" claim no longer reproduces the stored hash.
+    const pub = await t.ctx.traceService.verifyPublic(batch.id);
+    expect(pub.serverCheck).toMatchObject({ valid: false, brokenAtIndex: 0, problem: 'DISCLOSURE_MISMATCH' });
+    // Full access recomputes every field.
+    const { token } = await t.ctx.traceService.createVerificationLink(farmer, batch.id, 1);
+    const full = await t.ctx.traceService.verifyPublic(batch.id, token);
+    expect(full.serverCheck).toMatchObject({ valid: false, brokenAtIndex: 0, problem: 'TAMPERED_EVENT' });
   });
 
   it('flags a deleted tail — the remaining chain links perfectly but no longer reaches the recorded head', async () => {
@@ -46,10 +52,10 @@ describe('TraceService', () => {
     const { batch } = await batchWithTwoEvents(t);
     await asAttacker(t, 'DELETE FROM trace_events WHERE batch_id = $1 AND sequence_number = 1', [batch.id]);
 
-    const full = await t.ctx.traceService.verifyPublic(batch.id);
-    expect(full.events).toHaveLength(1);
-    expect(full.perEvent[0]).toMatchObject({ matchesStoredHash: true, linksToPrevious: true });
-    expect(full).toMatchObject({ valid: false, problem: 'HEAD_MISMATCH', headMatches: false });
+    const pub = await t.ctx.traceService.verifyPublic(batch.id);
+    expect(pub.events).toHaveLength(1);
+    expect(hashOfDisclosure(pub.events[0].disclosure!)).toBe(pub.events[0].hash);
+    expect(pub.serverCheck).toMatchObject({ valid: false, problem: 'HEAD_MISMATCH', headMatches: false });
   });
 
   it('surfaces anomalies detected across the batch history', async () => {
@@ -112,33 +118,56 @@ describe('TraceService', () => {
     await expect(t.ctx.traceService.verifyPublic("'; DROP TABLE batches; --")).rejects.toThrow('Batch not found');
   });
 
-  it('publishes everything a third party needs to recompute every v2 hash with NO server secret', async () => {
+  it('public verification opens only whitelisted fields, yet a third party can recompute every hash', async () => {
     const t = getDb();
-    const { batch } = await batchWithTwoEvents(t);
-    const { events, valid } = await t.ctx.traceService.verifyPublic(batch.id);
-    expect(valid).toBe(true);
+    const tenant = await createTenant(t);
+    const farmer = await createActor(t, tenant, 'FARMER');
+    const processor = await createActor(t, tenant, 'PROCESSOR');
+    const batch = await t.ctx.supplyChainService.createBatch(farmer, sampleBatch);
+    await t.ctx.supplyChainService.recordEvent(farmer, {
+      batchId: batch.id,
+      stage: 'HARVEST',
+      location: 'Cầu Đất',
+      notes: 'nội bộ: giá thu mua 52.000đ/kg',
+      data: { variety: 'Robusta', moisture: 13.5, internalPlotNo: 'L-17' },
+      assignNextTo: processor.id,
+    });
+
+    const payload = await t.ctx.traceService.verifyPublic(batch.id);
+    expect(payload.access).toBe('public');
+    expect(payload.serverCheck.valid).toBe(true);
+    const json = JSON.stringify(payload);
+    for (const secret of ['giá thu mua', 'L-17', '13.5', farmer.id, tenant.id]) expect(json).not.toContain(secret);
+
+    const [e] = payload.events;
+    expect(e.disclosure!.disclosed.map((c) => c.name).sort()).toEqual(['data.variety', 'location']);
+    expect(e.disclosure!.hidden).toHaveLength(4); // actorId, notes, data.moisture, data.internalPlotNo
 
     // An independent verifier: only JCS + SHA-256, nothing imported from the ledger module's hashing.
-    let prev = GENESIS_HASH;
-    for (const e of events) {
-      const preimage = canonicalize({
-        v: 2,
-        salt: e.salt,
-        batchId: e.batchId,
-        sequenceNumber: e.sequenceNumber,
-        prevHash: e.prevHash,
-        stage: e.stage,
-        actorId: e.actorId,
-        timestamp: new Date(e.timestamp).toISOString(),
-        location: e.location,
-        notes: e.notes ?? null,
-        data: e.data,
-      });
-      expect(createHash('sha256').update(preimage, 'utf8').digest('hex')).toBe(e.hash);
-      expect(e.prevHash).toBe(prev);
-      prev = e.hash;
-    }
-    expect(events.every((e) => !('tenantId' in e))).toBe(true);
+    const sha = (x: string) => createHash('sha256').update(x, 'utf8').digest('hex');
+    const opened = e.disclosure!.disclosed.map((c) => sha(canonicalize({ name: c.name, salt: c.salt, value: c.value })));
+    const claims = [...opened, ...e.disclosure!.hidden].sort();
+    expect(sha(canonicalize({ ...e.disclosure!.envelope, claims }))).toBe(e.hash);
+    expect(e.disclosure!.envelope).toMatchObject({ v: 3, batchId: batch.id, prevHash: GENESIS_HASH, kind: 'OBSERVE', links: [] });
+  });
+
+  it('a verification link opens every field, only for its own batch, and expires', async () => {
+    const t = getDb();
+    const { farmer, batch } = await batchWithTwoEvents(t);
+    const other = await t.ctx.supplyChainService.createBatch(farmer, sampleBatch);
+    const { token, expiresAt } = await t.ctx.traceService.createVerificationLink(farmer, batch.id, 7);
+    expect(expiresAt.getTime()).toBeGreaterThan(Date.now() + 6 * 24 * 3600 * 1000);
+
+    const full = await t.ctx.traceService.verifyPublic(batch.id, token);
+    expect(full.access).toBe('full');
+    expect(full.serverCheck.valid).toBe(true);
+    expect(full.events[0].disclosure!.hidden).toHaveLength(0);
+    expect(full.events[0].disclosure!.disclosed.map((c) => c.name)).toContain('actorId');
+
+    await expect(t.ctx.traceService.verifyPublic(other.id, token)).rejects.toThrow(/invalid or has expired/);
+    await expect(t.ctx.traceService.verifyPublic(batch.id, 'garbage')).rejects.toThrow(/invalid or has expired/);
+    const expired = jwt.sign({ typ: 'verify-link', bid: batch.id, tid: batch.tenantId, exp: 1 }, TEST_JWT_SECRET);
+    await expect(t.ctx.traceService.verifyPublic(batch.id, expired)).rejects.toThrow(/invalid or has expired/);
   });
 
   it('still verifies legacy v1 (HMAC) events written before hash v2, given the legacy key', async () => {
@@ -166,12 +195,17 @@ describe('TraceService', () => {
        VALUES ($1, $2, $3, 'HARVEST', $4, $5, 'legacy', '{}', $6, $7, 0, 1)`,
       [uuidv4(), batch.id, tenant.id, farmer.id, legacy.timestamp, legacyHash, GENESIS_HASH],
     );
-    // ...and v2 continues the same chain.
+    // ...and the current format continues the same chain.
     const admin = await createActor(t, tenant, 'ADMIN');
-    await t.ctx.supplyChainService.recordEvent(admin, { batchId: batch.id, stage: 'PROCESSING', location: 'v2' });
+    await t.ctx.supplyChainService.recordEvent(admin, { batchId: batch.id, stage: 'PROCESSING', location: 'v3' });
 
-    const result = await t.ctx.traceService.verifyPublic(batch.id);
-    expect(result).toMatchObject({ valid: true, legacyEventCount: 1 });
-    expect(result.perEvent.map((p) => p.hashVersion)).toEqual([1, 2]);
+    const { token } = await t.ctx.traceService.createVerificationLink(admin, batch.id, 1);
+    const result = await t.ctx.traceService.verifyPublic(batch.id, token);
+    expect(result.serverCheck.valid).toBe(true);
+    expect(result.events.map((e) => e.hashVersion)).toEqual([1, 3]);
+    // Publicly, the v1 event carries no content at all — only its hash and link.
+    const pub = await t.ctx.traceService.verifyPublic(batch.id);
+    expect(pub.events[0]).not.toHaveProperty('disclosure');
+    expect(pub.serverCheck.valid).toBe(true);
   });
 });

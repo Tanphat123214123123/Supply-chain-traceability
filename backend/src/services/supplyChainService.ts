@@ -12,9 +12,12 @@ import {
   TraceEvent,
 } from '../domain/types';
 import { ConflictError, ForbiddenError, NotFoundError } from '../errors';
-import { computeEventHashV2, CURRENT_HASH_VERSION, newEventSalt } from '../ledger/hashChain';
+import { sealEventV3 } from '../ledger/hashChain';
 import { BatchExportFilters, IActorRepo, IAnomalyRepo, IAuditLogRepo, IBatchRepo, IEventRepo } from '../repository/interfaces';
+import { PostgresLineageRepo, toKg } from '../repository/postgres/lineageRepo';
+import { PostgresPlotRepo } from '../repository/postgres/plotRepo';
 import { detectNewAnomalies } from './anomalyDetector';
+import { resolveNextAssignee } from './custody';
 import { getInvolvedActorIds } from './notificationScope';
 
 export { ConflictError, ForbiddenError, NotFoundError };
@@ -30,6 +33,8 @@ export interface SupplyChainRepos {
   anomalyRepo: IAnomalyRepo;
   auditLogRepo: IAuditLogRepo;
   actorRepo: IActorRepo;
+  plotRepo: PostgresPlotRepo;
+  lineageRepo: PostgresLineageRepo;
 }
 
 export class SupplyChainService {
@@ -41,6 +46,11 @@ export class SupplyChainService {
 
   async createBatch(actor: Actor, dto: CreateBatchDTO): Promise<Batch> {
     return this.db.withTenant(actor.tenantId, async () => {
+      if (dto.plotId) {
+        const plot = await this.repos.plotRepo.findById(dto.plotId);
+        if (!plot || plot.tenantId !== actor.tenantId) throw new NotFoundError('Plot not found');
+        if (actor.role !== 'ADMIN' && plot.ownerActorId !== actor.id) throw new ForbiddenError('This plot is not yours');
+      }
       const batch = await this.repos.batchRepo.create({
         id: uuidv4(),
         productName: dto.productName,
@@ -57,10 +67,44 @@ export class SupplyChainService {
         // The creator is who's expected to record the first event (they're the
         // one who actually has the physical goods in hand right now).
         assignedToActorId: actor.id,
+        plotId: dto.plotId,
       });
-      await this.audit(actor, 'BATCH_CREATED', 'batch', batch.id, { productName: batch.productName });
+      await this.audit(actor, 'BATCH_CREATED', 'batch', batch.id, { productName: batch.productName, plotId: dto.plotId });
+      if (dto.plotId) await this.checkPlotYield(batch, dto.plotId);
       return batch;
     });
+  }
+
+  /**
+   * SPEC §5 level 2: everything harvested from one plot in the last 365 days
+   * can't exceed its area × the product's yield cap ("a 2 ha garden selling 30 t").
+   */
+  private async checkPlotYield(batch: Batch, plotId: string): Promise<void> {
+    const [plot, cap] = await Promise.all([
+      this.repos.plotRepo.findById(plotId),
+      this.repos.lineageRepo.yieldCap(batch.productType),
+    ]);
+    if (!plot || cap === null) return;
+    const harvests = await this.repos.lineageRepo.plotHarvests(plotId, batch.createdAt);
+    let totalKg = 0;
+    for (const h of harvests.filter((x) => x.productType === batch.productType)) {
+      const kg = toKg(h.quantity, h.unit);
+      if (kg === null) return; // count units can't be weighed
+      totalKg += kg;
+    }
+    const limitKg = plot.areaHa * cap;
+    if (totalKg <= limitKg) return;
+    const anomaly = await this.repos.anomalyRepo.create({
+      id: uuidv4(),
+      type: 'MASS_BALANCE_VIOLATION',
+      severity: 'HIGH',
+      message: `Cân bằng khối lượng: lô đất ${plot.code} (${plot.areaHa} ha) đã khai ${totalKg.toLocaleString('vi-VN')} kg ${batch.productType} trong 12 tháng, vượt năng suất tối đa ${limitKg.toLocaleString('vi-VN')} kg`,
+      batchId: batch.id,
+      tenantId: batch.tenantId,
+      detectedAt: new Date(),
+      resolved: false,
+    });
+    this.realtime?.emitAnomaly(anomaly, [batch.createdBy]);
   }
 
   /** Whether a tenant has any batch at all — used to keep demo seeding idempotent. */
@@ -81,6 +125,13 @@ export class SupplyChainService {
   async listPendingForActor(actor: Actor): Promise<Batch[]> {
     return this.db.withTenant(actor.tenantId, () =>
       this.repos.batchRepo.findPendingFor(actor.tenantId, actor.id, ROLE_STAGES[actor.role], actor.role === 'ADMIN'),
+    );
+  }
+
+  /** Lots this actor can use as inputs to a merge/split/transform. */
+  async listInCustody(actor: Actor): Promise<Batch[]> {
+    return this.db.withTenant(actor.tenantId, () =>
+      this.repos.batchRepo.findInCustody(actor.tenantId, actor.id, actor.role === 'ADMIN'),
     );
   }
 
@@ -110,38 +161,6 @@ export class SupplyChainService {
   }
 
   /**
-   * Validates the hand-off for the NEXT stage and returns the actorId that
-   * should become the batch's new custodian — null if the chain is complete
-   * (terminal stage) or an ADMIN deliberately left it unclaimed. Only called
-   * when `newStageIndex` is a genuine forward advance, so a backfilled or
-   * duplicate stage recording never disturbs the current hand-off.
-   */
-  private async resolveNextAssignee(
-    actor: Actor,
-    newStageIndex: number,
-    assignNextTo: string | undefined,
-  ): Promise<string | null> {
-    const isTerminal = newStageIndex === STAGE_ORDER.length - 1;
-    if (isTerminal) return null;
-
-    if (!assignNextTo) {
-      if (actor.role === 'ADMIN') return null;
-      throw new ConflictError('You must designate who handles the next stage before completing this one');
-    }
-
-    const nextActor = await this.repos.actorRepo.findById(assignNextTo);
-    if (!nextActor || nextActor.tenantId !== actor.tenantId) throw new NotFoundError('Assigned actor not found');
-    if (!nextActor.isActive) throw new ConflictError('Assigned actor account is inactive');
-
-    const nextStage = STAGE_ORDER[newStageIndex + 1];
-    if (!ROLE_STAGES[nextActor.role].includes(nextStage)) {
-      throw new ConflictError(`${nextActor.role} cannot handle stage ${nextStage}`);
-    }
-
-    return nextActor.id;
-  }
-
-  /**
    * One transaction, one row lock: the batch row is locked FOR UPDATE, so
    * concurrent recordings on the same batch — from this process or any other
    * replica — serialise, and each sees the head left by the previous one.
@@ -161,6 +180,9 @@ export class SupplyChainService {
       // deliberately lets ADMIN bypass the custody check, so this must come first.
       if (!batch || batch.tenantId !== actor.tenantId) throw new NotFoundError('Batch not found');
       if (batch.isRecalled) throw new ConflictError('Batch has been recalled — no further events allowed');
+      if (batch.consumedQuantity >= batch.quantity) {
+        throw new ConflictError('Batch has been fully consumed by a merge, split or transformation');
+      }
       this.assertCustody(actor, batch);
 
       const newIndex = STAGE_ORDER.indexOf(dto.stage);
@@ -168,10 +190,9 @@ export class SupplyChainService {
       const isAdvancing = newIndex > currentIndex;
       // Resolve (and validate) the hand-off BEFORE writing anything.
       const nextAssignee = isAdvancing
-        ? await this.resolveNextAssignee(actor, newIndex, dto.assignNextTo)
+        ? await resolveNextAssignee(this.repos.actorRepo, actor, newIndex, dto.assignNextTo)
         : (batch.assignedToActorId ?? null);
 
-      const salt = newEventSalt();
       const unhashed = {
         batchId: batch.id,
         stage: dto.stage,
@@ -182,15 +203,11 @@ export class SupplyChainService {
         data: dto.data ?? {},
         prevHash: batch.headHash,
         sequenceNumber: batch.eventCount,
+        kind: 'OBSERVE' as const,
+        links: [],
       };
-      const event: TraceEvent = {
-        ...unhashed,
-        id: uuidv4(),
-        tenantId: batch.tenantId,
-        hashVersion: CURRENT_HASH_VERSION,
-        salt,
-        hash: computeEventHashV2(unhashed, salt),
-      };
+      const { hash, claimSalts } = sealEventV3(unhashed);
+      const event: TraceEvent = { ...unhashed, id: uuidv4(), tenantId: batch.tenantId, hashVersion: 3, claimSalts, hash };
       await this.repos.eventRepo.create(event);
 
       const allEvents = await this.repos.eventRepo.findByBatchId(batch.id);
@@ -215,6 +232,31 @@ export class SupplyChainService {
 
     for (const anomaly of newAnomalies) this.realtime?.emitAnomaly(anomaly, recipients);
     return event;
+  }
+
+  /**
+   * Hands a lot over without recording a stage — e.g. the mill kept the green
+   * beans after a transformation and now passes them to QC. Only the current
+   * custodian (or ADMIN) may, and only to someone who works the lot's next
+   * stage. Custody is bookkeeping, not ledger data, so it's audited rather
+   * than hash-chained.
+   */
+  async handOff(actor: Actor, id: string, toActorId: string): Promise<Batch> {
+    return this.db.withTenant(actor.tenantId, async () => {
+      const batch = await this.repos.batchRepo.findByIdForUpdate(id);
+      if (!batch || batch.tenantId !== actor.tenantId) throw new NotFoundError('Batch not found');
+      if (batch.isRecalled) throw new ConflictError('Batch has been recalled — no further events allowed');
+      if (batch.consumedQuantity >= batch.quantity) {
+        throw new ConflictError('Batch has been fully consumed by a merge, split or transformation');
+      }
+      this.assertCustody(actor, batch);
+      const currentIndex = batch.currentStage ? STAGE_ORDER.indexOf(batch.currentStage) : -1;
+      if (currentIndex === STAGE_ORDER.length - 1) throw new ConflictError('Batch has completed its journey');
+      const next = await resolveNextAssignee(this.repos.actorRepo, actor, currentIndex, toActorId);
+      await this.repos.batchRepo.reassign(batch.id, next!);
+      await this.audit(actor, 'BATCH_HANDED_OFF', 'batch', batch.id, { from: batch.assignedToActorId ?? null, to: next });
+      return (await this.repos.batchRepo.findById(batch.id))!;
+    });
   }
 
   async recallBatch(actor: Actor, id: string, reason: string): Promise<Batch> {

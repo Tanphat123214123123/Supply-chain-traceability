@@ -1,13 +1,18 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { AdminService } from '../../services/adminService';
+import { AppContext } from '../../bootstrap';
 import { AuthService } from '../../services/authService';
 import { requireAuth, requireRole } from '../middleware/auth';
 import { asyncHandler } from '../middleware/error';
 import { validateBody, validateQuery } from '../middleware/validate';
 import { anomalyListQuerySchema, createInvitationSchema, paginationSchema } from '../../validation/schemas';
 
-export function adminRoutes(adminService: AdminService, authService: AuthService): Router {
+export function adminRoutes(
+  adminService: AdminService,
+  authService: AuthService,
+  anchoring: Pick<AppContext, 'anchorStore' | 'anchorWorker' | 'anchorInfo'>,
+): Router {
   const router = Router();
   router.use(requireAuth(authService));
   router.use(requireRole('ADMIN'));
@@ -57,6 +62,26 @@ export function adminRoutes(adminService: AdminService, authService: AuthService
     '/invitations/:id',
     asyncHandler(async (req, res) => {
       res.json(await authService.revokeInvitation(req.actor!, req.params.id));
+    }),
+  );
+
+  // Anchoring status — the anchors table holds only public data (roots, tx hashes).
+  router.get(
+    '/anchors',
+    asyncHandler(async (_req, res) => {
+      res.json({ ...anchoring.anchorInfo, anchors: await anchoring.anchorStore.findRecent(50) });
+    }),
+  );
+
+  // Run one anchoring step now instead of waiting for the next interval (demo, ops).
+  router.post(
+    '/anchors/run',
+    asyncHandler(async (_req, res) => {
+      if (!anchoring.anchorWorker) {
+        res.status(409).json({ error: 'Anchoring is not configured' });
+        return;
+      }
+      res.json(await anchoring.anchorWorker.tick());
     }),
   );
 

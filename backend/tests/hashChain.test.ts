@@ -31,12 +31,12 @@ function base(overrides: Partial<HashableEvent> = {}): HashableEvent {
 
 function v2Event(id: string, overrides: Partial<HashableEvent> = {}, salt = newEventSalt()): TraceEvent {
   const unhashed = base(overrides);
-  return { ...unhashed, id, tenantId: 'tenant', hashVersion: 2, salt, hash: computeEventHashV2(unhashed, salt) };
+  return { ...unhashed, id, tenantId: 'tenant', hashVersion: 2, salt, hash: computeEventHashV2(unhashed, salt), kind: 'OBSERVE', links: [] };
 }
 
 function v1Event(id: string, overrides: Partial<HashableEvent> = {}): TraceEvent {
   const unhashed = base(overrides);
-  return { ...unhashed, id, tenantId: 'tenant', hashVersion: 1, hash: computeEventHashV1(unhashed, LEGACY_KEY) };
+  return { ...unhashed, id, tenantId: 'tenant', hashVersion: 1, hash: computeEventHashV1(unhashed, LEGACY_KEY), kind: 'OBSERVE', links: [] };
 }
 
 /** A valid v2 chain of `n` events. */

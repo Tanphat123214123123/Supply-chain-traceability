@@ -30,6 +30,9 @@ async function freshDatabase(): Promise<{ pool: Pool; drop: () => Promise<void> 
   };
 }
 
+// Fresh databases run CREATE EXTENSION postgis, which takes seconds — slower still while other suites run.
+jest.setTimeout(120_000);
+
 describe('migrator', () => {
   it('applies every migration on an empty database, then is a no-op', async () => {
     const { pool, drop } = await freshDatabase();
@@ -108,6 +111,8 @@ describe('migrator', () => {
           tenantId,
           hashVersion: 1,
           hash: computeEventHashV1(unhashed, LEGACY_KEY),
+          kind: 'OBSERVE',
+          links: [],
         };
         legacy.push(event);
         await pool.query(
@@ -123,7 +128,7 @@ describe('migrator', () => {
 
       // ── Upgrade ──
       const result = await migrate(pool);
-      expect(result.applied.map((n) => n.slice(0, 3))).toEqual(['006', '007', '008', '009', '010']);
+      expect(result.applied.map((n) => n.slice(0, 3))).toEqual(['006', '007', '008', '009', '010', '011', '012', '013', '014']);
 
       const batch = await pool.query('SELECT head_hash, event_count FROM batches WHERE id = $1', [batchId]);
       expect(batch.rows[0]).toEqual({ head_hash: legacy[1].hash, event_count: 2 });

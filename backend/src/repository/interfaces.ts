@@ -71,11 +71,13 @@ export interface BatchExportFilters {
 }
 
 /** A batch as the application creates it — the chain head starts at genesis and is owned by the database. */
-export type NewBatch = Omit<Batch, 'headHash' | 'eventCount'>;
+export type NewBatch = Omit<Batch, 'headHash' | 'eventCount' | 'consumedQuantity'>;
 
 export interface IBatchRepo {
   create(batch: NewBatch): Promise<Batch>;
   findById(id: string): Promise<Batch | null>;
+  /** Many lots in one round-trip (lineage graphs can span hundreds). */
+  findByIds(ids: string[]): Promise<Batch[]>;
   /** Same as findById but takes a row lock until the surrounding transaction ends. */
   findByIdForUpdate(id: string): Promise<Batch | null>;
   /** Pre-tenant: the tenant that owns a batch, for public QR/provenance lookups. */
@@ -85,11 +87,15 @@ export interface IBatchRepo {
   findForExport(tenantId: string, filters: BatchExportFilters): Promise<Batch[]>;
   /** Non-recalled batches whose NEXT stage is in `allowedStages` and that this actor may act on. */
   findPendingFor(tenantId: string, actorId: string, allowedStages: SupplyChainStage[], isAdmin: boolean): Promise<Batch[]>;
+  /** Open lots (recorded, not recalled, not fully consumed) this actor holds — all open lots for ADMIN. */
+  findInCustody(tenantId: string, actorId: string, isAdmin: boolean): Promise<Batch[]>;
   /** Batches the actor created, currently holds, or recorded any event on. */
   findInvolving(tenantId: string, actorId: string): Promise<Batch[]>;
   /** Keyset-paginated walk over a tenant's batches (for integrity scans). */
   findPageAfter(tenantId: string, afterId: string | null, limit: number): Promise<Batch[]>;
   advanceStage(id: string, stage: SupplyChainStage, assignedToActorId: string | null): Promise<void>;
+  /** Changes custody only (no stage change). */
+  reassign(id: string, assignedToActorId: string): Promise<void>;
   /** Atomically recalls a not-yet-recalled batch; null if it doesn't exist or was already recalled. */
   markRecalled(id: string, reason: string): Promise<Batch | null>;
 }

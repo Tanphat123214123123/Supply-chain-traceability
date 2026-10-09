@@ -9,6 +9,7 @@ import {
   StatsOverview,
 } from '../domain/types';
 import { IStatsRepo } from '../repository/interfaces';
+import { PostgresReportRepo, ReportData, ReportFilters } from '../repository/postgres/reportRepo';
 
 /** How many most-recent active days the "batches per day" chart shows. */
 const DAYS_SHOWN = 30;
@@ -17,7 +18,18 @@ export class StatsService {
   constructor(
     private readonly db: Database,
     private readonly statsRepo: IStatsRepo,
+    private readonly reportRepo?: PostgresReportRepo,
   ) {}
+
+  /** Everything the Reports dashboard shows, for one filtered window (default: last 180 days). */
+  async report(tenantId: string, filters: Partial<ReportFilters>): Promise<ReportData> {
+    if (!this.reportRepo) throw new Error('Report repository not configured');
+    const to = filters.to ?? new Date();
+    const from = filters.from ?? new Date(to.getTime() - 180 * 24 * 3600 * 1000);
+    return this.db.withTenant(tenantId, () =>
+      this.reportRepo!.report(tenantId, { from, to, productType: filters.productType, origin: filters.origin }),
+    );
+  }
 
   /**
    * `anomalyCount` includes CHAIN_TAMPERED anomalies — those are persisted by

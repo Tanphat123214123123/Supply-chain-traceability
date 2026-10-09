@@ -3,6 +3,9 @@ import { AuthService } from '../../services/authService';
 import { StatsService } from '../../services/statsService';
 import { requireAuth } from '../middleware/auth';
 import { asyncHandler } from '../middleware/error';
+import { validateQuery } from '../middleware/validate';
+import { reportQuerySchema } from '../../validation/schemas';
+import { z } from 'zod';
 
 export function statsRoutes(statsService: StatsService, authService: AuthService): Router {
   const router = Router();
@@ -33,6 +36,15 @@ export function statsRoutes(statsService: StatsService, authService: AuthService
     '/attention',
     asyncHandler(async (req, res) => {
       res.json(await statsService.attention(req.actor!.tenantId));
+    }),
+  );
+
+  router.get(
+    '/report',
+    validateQuery(reportQuerySchema),
+    asyncHandler(async (req, res) => {
+      const q = req.query as unknown as z.infer<typeof reportQuerySchema>;
+      res.json(await statsService.report(req.actor!.tenantId, q));
     }),
   );
 

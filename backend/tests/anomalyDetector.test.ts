@@ -15,7 +15,9 @@ function makeEvent(stage: SupplyChainStage, overrides: Partial<TraceEvent> = {})
     hash: `hash-${seq}`,
     prevHash: `hash-${seq - 1}`,
     sequenceNumber: seq++,
-    hashVersion: 2,
+    hashVersion: 3,
+    kind: 'OBSERVE',
+    links: [],
     ...overrides,
   };
 }

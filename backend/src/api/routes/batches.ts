@@ -10,6 +10,7 @@ import { validateBody, validateQuery } from '../middleware/validate';
 import {
   createBatchSchema,
   exportBatchesQuerySchema,
+  handOffSchema,
   paginationSchema,
   recallBatchSchema,
 } from '../../validation/schemas';
@@ -50,6 +51,13 @@ export function batchRoutes(
     '/pending',
     asyncHandler(async (req, res) => {
       res.json(await supplyChainService.listPendingForActor(req.actor!));
+    }),
+  );
+
+  router.get(
+    '/custody',
+    asyncHandler(async (req, res) => {
+      res.json(await supplyChainService.listInCustody(req.actor!));
     }),
   );
 
@@ -117,6 +125,15 @@ export function batchRoutes(
       const { reason } = req.body as { reason: string };
       const batch = await supplyChainService.recallBatch(req.actor!, req.params.id, reason);
       res.json(batch);
+    }),
+  );
+
+  router.post(
+    '/:id/handoff',
+    validateBody(handOffSchema),
+    asyncHandler(async (req, res) => {
+      const { assignNextTo } = req.body as z.infer<typeof handOffSchema>;
+      res.json(await supplyChainService.handOff(req.actor!, req.params.id, assignNextTo));
     }),
   );
 

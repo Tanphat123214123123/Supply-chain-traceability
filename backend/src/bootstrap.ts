@@ -1,4 +1,7 @@
 import { v4 as uuidv4 } from 'uuid';
+import { AnchorStore } from './anchor/anchorStore';
+import { AnchorWorker } from './anchor/anchorWorker';
+import { AnchorConfig, anchorConfigFromEnv, ViemAnchorChain } from './anchor/chain';
 import { Database } from './db/database';
 import { assertSchemaUpToDate } from './db/migrator';
 import { createPool } from './db/pool';
@@ -10,6 +13,9 @@ import { PostgresAuditLogRepo } from './repository/postgres/auditLogRepo';
 import { PostgresBatchRepo } from './repository/postgres/batchRepo';
 import { PostgresEventRepo } from './repository/postgres/eventRepo';
 import { PostgresInvitationRepo } from './repository/postgres/invitationRepo';
+import { PostgresLineageRepo } from './repository/postgres/lineageRepo';
+import { PostgresPlotRepo } from './repository/postgres/plotRepo';
+import { PostgresReportRepo } from './repository/postgres/reportRepo';
 import { PostgresRefreshTokenRepo } from './repository/postgres/refreshTokenRepo';
 import { PostgresStatsRepo } from './repository/postgres/statsRepo';
 import { PostgresTenantRepo } from './repository/postgres/tenantRepo';
@@ -19,12 +25,23 @@ import { AuthOptions, AuthService } from './services/authService';
 import { StatsService } from './services/statsService';
 import { SupplyChainService } from './services/supplyChainService';
 import { TraceService } from './services/traceService';
+import { LineageService } from './services/lineageService';
+import { PlotService } from './services/plotService';
 
 export interface AppConfig {
   jwtSecret: string;
   /** Former LEDGER_SIGNING_KEY — now only used to re-verify legacy v1 (HMAC) events. */
   legacyLedgerKey?: string;
   auth?: AuthOptions;
+  /** Blockchain anchoring (ANCHOR_* env); absent = anchoring disabled. */
+  anchor?: AnchorConfig;
+}
+
+/** Public facts about where events are anchored — the verifier reads the contract itself. */
+export interface AnchorInfo {
+  enabled: boolean;
+  chainId?: number;
+  contractAddress?: string;
 }
 
 export interface AppContext {
@@ -34,7 +51,14 @@ export interface AppContext {
   traceService: TraceService;
   statsService: StatsService;
   adminService: AdminService;
+  lineageService: LineageService;
+  plotService: PlotService;
   realtime: SocketRealtimeEmitter;
+  anchorStore: AnchorStore;
+  anchorWorker?: AnchorWorker;
+  anchorInfo: AnchorInfo;
+  /** Run loop interval for the worker, when enabled. */
+  anchorIntervalMs?: number;
 }
 
 /** Wires repositories and services around one Database — shared by the server and the test suite. */
@@ -48,21 +72,54 @@ export function createContext(db: Database, config: AppConfig): AppContext {
   const refreshTokenRepo = new PostgresRefreshTokenRepo(db);
   const statsRepo = new PostgresStatsRepo(db);
   const invitationRepo = new PostgresInvitationRepo(db);
+  const anchorStore = new AnchorStore(db);
+  const plotRepo = new PostgresPlotRepo(db);
+  const lineageRepo = new PostgresLineageRepo(db);
+  const lineageService = new LineageService(db, { batchRepo, eventRepo, anomalyRepo, auditLogRepo, actorRepo, lineageRepo });
+  const organizationOf = async (actorId: string) => (await actorRepo.findById(actorId))?.organization ?? '';
 
   const realtime = new SocketRealtimeEmitter();
+
+  const anchorWorker = config.anchor
+    ? new AnchorWorker(anchorStore, new ViemAnchorChain(config.anchor), {
+        maxLeaves: config.anchor.maxLeaves,
+        confirmations: config.anchor.confirmations,
+        receiptTimeoutMs: 30_000,
+        resubmitAfterMs: 10 * 60_000,
+      })
+    : undefined;
 
   return {
     db,
     realtime,
+    anchorStore,
+    anchorWorker,
+    anchorIntervalMs: config.anchor?.intervalMs,
+    anchorInfo: config.anchor
+      ? { enabled: true, chainId: config.anchor.chainId, contractAddress: config.anchor.contractAddress }
+      : { enabled: false },
     authService: new AuthService(
       db,
       { actorRepo, refreshTokenRepo, auditLogRepo, tenantRepo, invitationRepo },
       config.jwtSecret,
       config.auth,
     ),
-    supplyChainService: new SupplyChainService(db, { batchRepo, eventRepo, anomalyRepo, auditLogRepo, actorRepo }, realtime),
-    traceService: new TraceService(db, { batchRepo, eventRepo, anomalyRepo, actorRepo }, config.legacyLedgerKey),
-    statsService: new StatsService(db, statsRepo),
+    supplyChainService: new SupplyChainService(
+      db,
+      { batchRepo, eventRepo, anomalyRepo, auditLogRepo, actorRepo, plotRepo, lineageRepo },
+      realtime,
+    ),
+    lineageService,
+    plotService: new PlotService(db, plotRepo, auditLogRepo, lineageService, organizationOf),
+    traceService: new TraceService(
+      db,
+      { batchRepo, eventRepo, anomalyRepo, actorRepo },
+      config.legacyLedgerKey,
+      anchorStore,
+      config.jwtSecret,
+      lineageService,
+    ),
+    statsService: new StatsService(db, statsRepo, new PostgresReportRepo(db)),
     adminService: new AdminService(
       db,
       { tenantRepo, actorRepo, eventRepo, batchRepo, anomalyRepo, auditLogRepo },
@@ -189,7 +246,11 @@ export async function bootstrap(): Promise<AppContext> {
     await assertSchemaUpToDate(db);
     await checkConnectionRole(db);
 
-    const ctx = createContext(db, { jwtSecret, legacyLedgerKey: process.env.LEDGER_SIGNING_KEY || undefined });
+    const ctx = createContext(db, {
+      jwtSecret,
+      legacyLedgerKey: process.env.LEDGER_SIGNING_KEY || undefined,
+      anchor: anchorConfigFromEnv() ?? undefined,
+    });
     if (shouldSeedDemoData()) await seedDemoData(ctx);
     return ctx;
   } catch (err) {

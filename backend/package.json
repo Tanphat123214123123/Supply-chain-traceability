@@ -29,6 +29,7 @@
     "socket.io-client": "^4.8.3",
     "swagger-ui-express": "^5.0.1",
     "uuid": "^9.0.1",
+    "viem": "^2.57.3",
     "zod": "^4.4.3"
   },
   "devDependencies": {

@@ -63,6 +63,13 @@ async function main(): Promise<void> {
     })
     .catch((err) => console.error('Startup integrity scan failed:', err));
 
+  // Seal events into Merkle roots on-chain (docs/SPEC_PHASE1.md §2.4).
+  const stopAnchoring = ctx.anchorWorker?.start(ctx.anchorIntervalMs ?? 60_000, (outcome) => {
+    if (outcome.action === 'error') console.warn(`Anchoring: ${outcome.error}`);
+    else if (outcome.action === 'confirmed') console.log(`Anchored ${outcome.anchor.leafCount} event(s), root ${outcome.anchor.root}`);
+  });
+  if (!ctx.anchorWorker) console.log('Anchoring disabled (set ANCHOR_RPC_URL, ANCHOR_CHAIN_ID, ANCHOR_CONTRACT, ANCHOR_PRIVATE_KEY).');
+
   const purgeTimer = setInterval(() => {
     ctx.authService.purgeStaleSessions().catch((err) => console.error('Session purge failed:', err));
   }, SESSION_PURGE_INTERVAL_MS);
@@ -74,6 +81,7 @@ async function main(): Promise<void> {
     shuttingDown = true;
     console.log(`${signal} received — draining connections...`);
     clearInterval(purgeTimer);
+    stopAnchoring?.();
 
     const force = setTimeout(() => {
       console.error('Graceful shutdown timed out — forcing exit.');

@@ -51,7 +51,7 @@ export default function Landing() {
     <div className="min-h-screen bg-white dark:bg-slate-950 overflow-x-hidden">
       {/* Nav */}
       <header className="border-b border-slate-100 dark:border-slate-800">
-        <div className="max-w-6xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between">
+        <div className="w-full px-4 sm:px-6 lg:px-8 2xl:px-12 h-16 flex items-center justify-between">
           <Link to="/" className="flex items-center gap-2 font-bold text-slate-900 dark:text-slate-50 text-lg">
             <Link2 className="w-6 h-6 text-brand-600 dark:text-brand-400" /> TraceChain
           </Link>
@@ -131,7 +131,7 @@ export default function Landing() {
       </section>
 
       {/* Features */}
-      <section className="max-w-6xl mx-auto px-4 sm:px-6 py-16 sm:py-20">
+      <section className="max-w-screen-2xl mx-auto px-4 sm:px-6 lg:px-8 py-16 sm:py-20">
         <div className="text-center max-w-xl mx-auto mb-12">
           <p className="text-xs font-semibold text-brand-600 dark:text-brand-400 tracking-wide uppercase mb-2">Tại sao TraceChain</p>
           <h2 className="text-2xl sm:text-3xl font-bold text-slate-900 dark:text-slate-50 tracking-tight">
@@ -153,7 +153,7 @@ export default function Landing() {
 
       {/* Roles */}
       <section className="bg-slate-50 dark:bg-slate-900/50 border-y border-slate-100 dark:border-slate-800">
-        <div className="max-w-6xl mx-auto px-4 sm:px-6 py-16 sm:py-20">
+        <div className="max-w-screen-2xl mx-auto px-4 sm:px-6 lg:px-8 py-16 sm:py-20">
           <div className="text-center max-w-xl mx-auto mb-12">
             <p className="text-xs font-semibold text-brand-600 dark:text-brand-400 tracking-wide uppercase mb-2">Một mạng lưới, nhiều vai trò</p>
             <h2 className="text-2xl sm:text-3xl font-bold text-slate-900 dark:text-slate-50 tracking-tight">
@@ -200,7 +200,7 @@ export default function Landing() {
 
       {/* Footer */}
       <footer className="border-t border-slate-100 dark:border-slate-800">
-        <div className="max-w-6xl mx-auto px-4 sm:px-6 py-8 flex flex-col sm:flex-row items-center justify-between gap-3 text-sm text-slate-400 dark:text-slate-500">
+        <div className="w-full px-4 sm:px-6 lg:px-8 2xl:px-12 py-8 flex flex-col sm:flex-row items-center justify-between gap-3 text-sm text-slate-400 dark:text-slate-500">
           <p>© {new Date().getFullYear()} TraceChain — Hệ thống truy xuất nguồn gốc chuỗi cung ứng</p>
           <div className="flex items-center gap-4">
             <Link to="/how-it-works" className="hover:text-slate-600 dark:hover:text-slate-300">Cách hoạt động</Link>

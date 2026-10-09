@@ -55,7 +55,7 @@ export default function AnomalyMonitor() {
 
   return (
     <div className="page-shell">
-      <main className="max-w-3xl mx-auto p-4 sm:p-6 space-y-4">
+      <main className="page-container space-y-4">
         <PageHeader
           title="Giám sát bất thường hệ thống"
           subtitle="Bỏ khâu, trùng khâu, sai thứ tự — mọi bất thường phát hiện tự động đều xuất hiện tại đây."

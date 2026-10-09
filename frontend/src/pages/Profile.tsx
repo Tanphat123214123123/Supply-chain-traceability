@@ -74,9 +74,10 @@ export default function Profile() {
 
   return (
     <div className="page-shell">
-      <main className="max-w-lg mx-auto p-4 sm:p-6 space-y-4">
+      <main className="page-container space-y-4">
         <PageHeader title="Hồ sơ cá nhân" />
 
+        <div className="grid grid-cols-1 lg:grid-cols-2 2xl:grid-cols-3 gap-4 items-start">
         <div className={cardClass({ padding: 'lg' })}>
           <div className="flex items-center gap-3 mb-4">
             <span className="w-12 h-12 rounded-2xl bg-gradient-to-br from-brand-500 to-emerald-500 text-white flex items-center justify-center text-lg font-bold flex-shrink-0">
@@ -161,6 +162,7 @@ export default function Profile() {
               </div>
             ))}
           </div>
+        </div>
         </div>
       </main>
     </div>

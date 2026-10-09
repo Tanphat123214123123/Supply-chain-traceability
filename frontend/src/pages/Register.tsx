@@ -6,6 +6,7 @@ import { useAuth } from '../context/AuthContext'
 import { apiErrorMessage } from '../lib/apiError'
 import Button from '../components/ui/Button'
 import { inputClass, labelClass } from '../components/ui/field'
+import BackToHome from '../components/BackToHome'
 
 type Mode = 'invite' | 'workspace'
 
@@ -121,6 +122,7 @@ export default function Register() {
     <div className="min-h-screen bg-white dark:bg-slate-950 flex items-center justify-center p-4 relative overflow-hidden">
       <div className="absolute -top-32 -right-32 w-96 h-96 bg-brand-100 dark:bg-brand-500/10 rounded-full blur-3xl opacity-50 dark:opacity-100 -z-10" />
       <div className="absolute -bottom-32 -left-32 w-96 h-96 bg-emerald-100 dark:bg-emerald-500/10 rounded-full blur-3xl opacity-50 dark:opacity-100 -z-10" />
+      <BackToHome className="absolute top-4 left-4 sm:top-6 sm:left-6" />
 
       <div className="bg-white dark:bg-slate-900 rounded-3xl shadow-glow dark:shadow-none border border-slate-100 dark:border-slate-800 w-full max-w-sm p-7 animate-slide-up">
         <div className="text-center mb-5">

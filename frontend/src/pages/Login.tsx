@@ -5,6 +5,7 @@ import { useAuth } from '../context/AuthContext'
 import { STAGE_ICONS, STAGE_LABELS, STAGE_ORDER } from '../api/client'
 import Button from '../components/ui/Button'
 import { inputClass, labelClass } from '../components/ui/field'
+import BackToHome from '../components/BackToHome'
 
 type ApiErr = { response?: { data?: { error?: string } } }
 
@@ -66,7 +67,8 @@ export default function Login() {
       </div>
 
       {/* Form panel */}
-      <div className="flex items-center justify-center p-6 sm:p-10">
+      <div className="relative flex items-center justify-center p-6 sm:p-10">
+        <BackToHome className="absolute top-4 left-4 sm:top-6 sm:left-6" />
         <div className="w-full max-w-sm animate-slide-up">
           <div className="lg:hidden text-center mb-8">
             <Link to="/" className="inline-flex items-center gap-2 text-xl font-bold text-slate-900 dark:text-slate-50">

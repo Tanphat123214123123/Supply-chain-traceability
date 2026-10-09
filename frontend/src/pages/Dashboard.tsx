@@ -178,11 +178,14 @@ export default function Dashboard() {
   }, [isAdmin])
 
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE))
+  const hasAside =
+    (!isAdmin && !!pending && pending.length > 0) ||
+    (showAttention && !!attention && (attention.stalledCount > 0 || attention.openAnomalyCount > 0))
   const firstName = actor?.name?.split(' ').pop() ?? ''
 
   return (
     <div className="page-shell">
-      <main className="max-w-5xl mx-auto p-4 sm:p-6 space-y-5">
+      <main className="page-container space-y-5">
         <PageHeader
           title={`Chào ${firstName}`}
           subtitle={actor ? `${actor.organization}` : undefined}
@@ -198,26 +201,6 @@ export default function Dashboard() {
             )
           }
         />
-
-        {/* My work first — this is what most people open the app for. */}
-        {!isAdmin && pending && pending.length > 0 && (
-          <section className={cardClass()}>
-            <div className="flex items-center justify-between mb-3">
-              <h2 className="text-sm font-semibold text-slate-800 dark:text-slate-100">Đang chờ bạn xử lý ({pending.length})</h2>
-              <Link to="/tasks" className="text-xs text-brand-600 dark:text-brand-400 font-medium hover:underline">
-                Xem tất cả →
-              </Link>
-            </div>
-            <div className="space-y-2">
-              {pending.slice(0, 3).map((b) => {
-                const next = nextStageOf(b)
-                return <BatchRow key={b.id} batch={b} to={`/record?batchId=${b.id}`} action={next ? STAGE_LABELS[next] : undefined} />
-              })}
-            </div>
-          </section>
-        )}
-
-        {showAttention && attention && <AttentionCard attention={attention} isAdmin={isAdmin} />}
 
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
           <StatCard icon={<Activity className="w-5 h-5" />} tone="success" label="Đang lưu thông" value={overview?.activeBatches ?? '–'} />
@@ -236,7 +219,9 @@ export default function Dashboard() {
           <StatCard icon={<Siren className="w-5 h-5" />} tone="danger" label="Đã thu hồi" value={overview?.recalledBatches ?? '–'} />
         </div>
 
-        <section className="space-y-3">
+        {/* Wide screens: the lot list gets the room, today's work sits beside it. */}
+        <div className={`grid grid-cols-1 gap-5 items-start ${hasAside ? 'xl:grid-cols-3' : ''}`}>
+          <section className={`space-y-3 min-w-0 ${hasAside ? 'xl:col-span-2' : ''}`}>
           <div className="flex items-center gap-2 flex-wrap">
             <h2 className="text-sm font-semibold text-slate-800 dark:text-slate-100 mr-auto">Tất cả lô hàng</h2>
             <div role="tablist" className="flex rounded-xl overflow-hidden border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800">
@@ -345,7 +330,31 @@ export default function Dashboard() {
               )}
             </>
           )}
-        </section>
+          </section>
+
+          {hasAside && (
+          <aside className="space-y-5 min-w-0 xl:sticky xl:top-20">
+            {/* My work first — this is what most people open the app for. */}
+            {!isAdmin && pending && pending.length > 0 && (
+              <section className={cardClass()}>
+                <div className="flex items-center justify-between mb-3">
+                  <h2 className="text-sm font-semibold text-slate-800 dark:text-slate-100">Đang chờ bạn xử lý ({pending.length})</h2>
+                  <Link to="/tasks" className="text-xs text-brand-600 dark:text-brand-400 font-medium hover:underline">
+                    Xem tất cả →
+                  </Link>
+                </div>
+                <div className="space-y-2">
+                  {pending.slice(0, 3).map((b) => {
+                    const next = nextStageOf(b)
+                    return <BatchRow key={b.id} batch={b} to={`/record?batchId=${b.id}`} action={next ? STAGE_LABELS[next] : undefined} />
+                  })}
+                </div>
+              </section>
+            )}
+            {showAttention && attention && <AttentionCard attention={attention} isAdmin={isAdmin} />}
+          </aside>
+          )}
+        </div>
       </main>
     </div>
   )

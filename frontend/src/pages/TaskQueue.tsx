@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { Clock3, PartyPopper, Plus } from 'lucide-react'
+import { Clock3, Combine, PartyPopper, Plus } from 'lucide-react'
 import { useAuth } from '../context/AuthContext'
 import { actorsApi, Actor, batchApi, Batch, STAGE_ICONS, STAGE_LABELS } from '../api/client'
-import { daysSince, nextStageOf, relativeDays } from '../domain/stageFields'
+import { canActOn, daysSince, nextStageOf, relativeDays } from '../domain/stageFields'
 import PageHeader from '../components/ui/PageHeader'
 import EmptyState from '../components/ui/EmptyState'
 import { buttonClass } from '../components/ui/Button'
@@ -33,18 +33,28 @@ export default function TaskQueue() {
   )
   const actorsById = useMemo(() => new Map(actors.map((a) => [a.id, a])), [actors])
   const canCreate = actor?.role === 'FARMER' || actor?.role === 'ADMIN'
+  const canTransform = actor?.role === 'PROCESSOR' || actor?.role === 'DISTRIBUTOR' || actor?.role === 'ADMIN'
 
   return (
     <div className="page-shell">
-      <main className="max-w-2xl mx-auto p-4 sm:p-6 space-y-4">
+      <main className="page-container space-y-4">
         <PageHeader
           title="Việc cần làm"
           subtitle={actor?.role === 'ADMIN' ? 'Mọi lô hàng đang chờ khâu tiếp theo trong không gian làm việc.' : 'Các lô hàng đã được bàn giao cho bạn.'}
           action={
-            canCreate && (
-              <Link to="/batches/new" className={buttonClass('primary', 'md')}>
-                <Plus className="w-4 h-4" /> Lô hàng mới
-              </Link>
+            (canCreate || canTransform) && (
+              <div className="flex gap-2 flex-wrap">
+                {canTransform && (
+                  <Link to="/lots/transform" className={buttonClass('secondary', 'md')}>
+                    <Combine className="w-4 h-4" /> Gộp / tách / chế biến
+                  </Link>
+                )}
+                {canCreate && (
+                  <Link to="/batches/new" className={buttonClass('primary', 'md')}>
+                    <Plus className="w-4 h-4" /> Lô hàng mới
+                  </Link>
+                )}
+              </div>
             )
           }
         />
@@ -60,17 +70,22 @@ export default function TaskQueue() {
           </div>
         )}
 
-        <ul className="space-y-2">
+        <ul className="grid grid-cols-1 lg:grid-cols-2 2xl:grid-cols-3 gap-3">
           {sorted.map((b, i) => {
             const next = nextStageOf(b)
             if (!next) return null
             const Icon = STAGE_ICONS[next]
+            // I hold it, but the next stage is someone else's: it's waiting on my hand-off.
+            const needsHandOff = actor ? !canActOn(actor, b) : false
             const since = b.lastEventAt ?? b.createdAt
             const overdue = (daysSince(since) ?? 0) >= 3
             const creator = actorsById.get(b.createdBy)
             return (
               <li key={b.id} className="animate-slide-up" style={{ animationDelay: `${Math.min(i, 8) * 40}ms` }}>
-                <Link to={`/record?batchId=${b.id}`} className={cardClass({ hover: true, padding: 'md', className: 'flex items-center gap-3' })}>
+                <Link
+                  to={needsHandOff ? `/batch/${b.id}` : `/record?batchId=${b.id}`}
+                  className={cardClass({ hover: true, padding: 'md', className: 'flex items-center gap-3' })}
+                >
                   <span className="w-10 h-10 rounded-xl bg-brand-50 text-brand-600 dark:bg-brand-500/10 dark:text-brand-400 flex items-center justify-center flex-shrink-0">
                     <Icon className="w-5 h-5" />
                   </span>
@@ -84,7 +99,7 @@ export default function TaskQueue() {
                       <Clock3 className="w-3 h-3" /> Chờ từ {relativeDays(since)}
                     </p>
                   </div>
-                  <span className={buttonClass('secondary', 'sm', 'flex-shrink-0')}>{STAGE_LABELS[next]}</span>
+                  <span className={buttonClass('secondary', 'sm', 'flex-shrink-0')}>{needsHandOff ? 'Cần bàn giao' : STAGE_LABELS[next]}</span>
                 </Link>
               </li>
             )

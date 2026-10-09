@@ -92,7 +92,7 @@ export default function AuditLog() {
 
   return (
     <div className="page-shell">
-      <main className="max-w-3xl mx-auto p-4 sm:p-6 space-y-4">
+      <main className="page-container space-y-4">
         <PageHeader
           title="Nhật ký kiểm toán"
           subtitle="Mọi thao tác ảnh hưởng đến hệ thống đều được ghi lại, không thể xoá."

@@ -27,6 +27,7 @@ const result: TraceResult = {
     metadata: {},
     headHash: 'h',
     eventCount: 1,
+    consumedQuantity: 0,
   },
   events: [
     {
@@ -42,6 +43,8 @@ const result: TraceResult = {
       prevHash: '0'.repeat(64),
       sequenceNumber: 0,
       hashVersion: 2,
+      kind: 'OBSERVE',
+      links: [],
     },
   ],
   anomalies: [],

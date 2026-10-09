@@ -5,6 +5,7 @@ export const MIME = {
   xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
   json: 'application/json;charset=utf-8',
   svg: 'image/svg+xml',
+  geojson: 'application/geo+json',
 } as const
 
 export function downloadBlob(filename: string, data: Blob | ArrayBuffer | string, mime: string): void {

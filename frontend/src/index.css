@@ -42,6 +42,11 @@
 
 @layer components {
   /* Shared page chrome so every screen gets the same soft, layered backdrop. */
+  /* Full-width content area for in-app pages: the screen is the canvas,
+     only a side gutter keeps text off the edge. */
+  .page-container {
+    @apply w-full px-4 sm:px-6 lg:px-8 2xl:px-12 py-4 sm:py-6;
+  }
   .page-shell {
     @apply min-h-screen bg-slate-50 dark:bg-slate-950;
     background-image: radial-gradient(circle at 10% 0%, rgb(238 244 255 / 0.7) 0%, transparent 45%),

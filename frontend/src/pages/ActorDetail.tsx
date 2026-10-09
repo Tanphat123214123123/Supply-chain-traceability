@@ -31,7 +31,7 @@ export default function ActorDetail() {
   if (!data) {
     return (
       <div className="page-shell">
-        <main className="max-w-2xl mx-auto p-4 sm:p-6 space-y-4">
+        <main className="page-container space-y-4">
           <Skeleton className="h-24 w-full" />
           <SkeletonCardList rows={3} />
         </main>
@@ -43,7 +43,7 @@ export default function ActorDetail() {
 
   return (
     <div className="page-shell">
-      <main className="max-w-2xl mx-auto p-4 sm:p-6 space-y-4">
+      <main className="page-container space-y-4">
         <button onClick={() => navigate(-1)} className="text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-100 text-sm">← Quay lại</button>
 
         <div className={cardClass({ padding: 'lg' })}>

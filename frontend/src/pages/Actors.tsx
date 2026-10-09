@@ -60,7 +60,7 @@ export default function Actors() {
 
   return (
     <div className="page-shell">
-      <main className="max-w-3xl mx-auto p-4 sm:p-6 space-y-4">
+      <main className="page-container space-y-4">
         <PageHeader title="Đối tác trong chuỗi cung ứng" subtitle="Toàn bộ tổ chức và tài khoản đang tham gia mạng lưới." />
 
         {welcome && (

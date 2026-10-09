@@ -24,7 +24,7 @@ export default function NotificationCenter() {
 
   return (
     <div className="page-shell">
-      <main className="max-w-2xl mx-auto p-4 sm:p-6 space-y-4">
+      <main className="page-container space-y-4">
         <PageHeader
           title="Trung tâm thông báo"
           subtitle="Lịch sử cảnh báo bất thường và thu hồi lô hàng — kể cả những cái bạn có thể đã bỏ lỡ."

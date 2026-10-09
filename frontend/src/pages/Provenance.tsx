@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
-import { Building2, CircleX, MapPin, ShieldAlert, ShieldCheck, Siren, TriangleAlert } from 'lucide-react'
+import BackButton from '../components/BackButton'
+import { Building2, CircleX, MapPin, ShieldAlert, ShieldCheck, Siren, Sprout, TriangleAlert } from 'lucide-react'
 import { traceApi, PublicTrace, STAGE_ICONS, STAGE_LABELS } from '../api/client'
 import { describeEventData } from '../domain/stageFields'
 
@@ -63,7 +64,8 @@ export default function Provenance() {
 
   if (error || !data) {
     return (
-      <div className="min-h-screen bg-slate-50 dark:bg-slate-950 flex items-center justify-center p-4">
+      <div className="relative min-h-screen bg-slate-50 dark:bg-slate-950 flex items-center justify-center p-4">
+        <BackButton fallback="/" className="absolute top-4 left-4" />
         <div className="text-center max-w-xs">
           <CircleX className="w-12 h-12 mx-auto mb-3 text-rose-500 dark:text-rose-400" />
           <p className="text-slate-900 dark:text-slate-100 font-medium">{error || 'Không tìm thấy sản phẩm'}</p>
@@ -80,7 +82,8 @@ export default function Provenance() {
 
   return (
     <div className="min-h-screen bg-gradient-to-b from-emerald-50 via-white to-white dark:from-slate-950 dark:via-slate-950 dark:to-slate-900">
-      <div className="max-w-md mx-auto px-4 pt-8 pb-12">
+      <div className="max-w-md mx-auto px-4 pt-4 pb-12">
+        <BackButton fallback="/" className="-ml-3 mb-2" />
         {/* Product */}
         <header className="text-center mb-6 animate-slide-up">
           <span className={`inline-block text-xs font-semibold px-3 py-1 rounded-full ${toneClass[status.tone]}`}>{status.text}</span>
@@ -98,6 +101,31 @@ export default function Provenance() {
             {batch.recallReason && <p className="text-rose-700 dark:text-rose-300 text-sm mt-1.5">Lý do: {batch.recallReason}</p>}
             <p className="text-rose-600 dark:text-rose-400/90 text-sm mt-2">Không sử dụng sản phẩm. Mang trả lại nơi đã mua để được hỗ trợ.</p>
           </div>
+        )}
+
+        {/* Where it came from — only when assembled from several harvests */}
+        {data.origins && (
+          <section className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-100 dark:border-slate-800 shadow-card dark:shadow-none p-5 mb-4">
+            <h2 className="text-sm font-semibold text-slate-700 dark:text-slate-300 mb-2 flex items-center gap-1.5">
+              <Sprout className="w-4 h-4 text-emerald-500" /> Nguồn gốc
+            </h2>
+            <p className="text-sm text-slate-700 dark:text-slate-200">
+              Sản phẩm được tập hợp từ <strong>{data.origins.harvestLotCount}</strong> lô thu hoạch
+              {data.origins.plotCount > 0 && <> trên <strong>{data.origins.plotCount}</strong> lô đất có toạ độ</>}
+              {data.origins.producers.length > 0 && <> của {data.origins.producers.length} đơn vị sản xuất</>}.
+            </p>
+            {data.origins.regions.length > 0 && (
+              <p className="text-xs text-slate-500 dark:text-slate-400 mt-1.5 flex items-start gap-1">
+                <MapPin className="w-3.5 h-3.5 mt-0.5 flex-shrink-0" /> {data.origins.regions.slice(0, 5).join(' · ')}
+                {data.origins.regions.length > 5 && ` và ${data.origins.regions.length - 5} vùng khác`}
+              </p>
+            )}
+            {data.origins.producers.length > 0 && (
+              <p className="text-xs text-slate-500 dark:text-slate-400 mt-1 flex items-start gap-1">
+                <Building2 className="w-3.5 h-3.5 mt-0.5 flex-shrink-0" /> {data.origins.producers.slice(0, 5).join(' · ')}
+              </p>
+            )}
+          </section>
         )}
 
         {/* Journey */}

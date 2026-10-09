@@ -112,7 +112,43 @@ export const STAGE_FIELDS: Record<SupplyChainStage, StageField[]> = {
   ],
 }
 
-export const PRODUCT_TYPES = ['Cà phê', 'Lúa gạo', 'Trái cây', 'Rau củ', 'Chè', 'Gia vị', 'Thủy sản', 'Khác'] as const
+/**
+ * Product types. The coffee and rubber forms are the ones the platform has
+ * conversion factors and yield caps for (backend migration 014), so mass
+ * balance is checked for them; the generic ones are kept for other crops.
+ */
+export const PRODUCT_TYPES = [
+  'Cà phê quả tươi',
+  'Cà phê nhân xô',
+  'Cà phê nhân xanh',
+  'Cà phê rang',
+  'Mủ cao su nước',
+  'Cao su khối',
+  'Cà phê',
+  'Lúa gạo',
+  'Trái cây',
+  'Rau củ',
+  'Chè',
+  'Gia vị',
+  'Thủy sản',
+  'Khác',
+] as const
+
+/** Mirrors backend conversion_factors (SPEC §5) — for the form's live hint only; the server decides. */
+export const CONVERSION_HINTS: Record<string, Record<string, [number, number]>> = {
+  'Cà phê quả tươi': { 'Cà phê nhân xanh': [0.16, 0.22], 'Cà phê nhân xô': [0.4, 0.5] },
+  'Cà phê nhân xô': { 'Cà phê nhân xanh': [0.78, 0.85] },
+  'Cà phê nhân xanh': { 'Cà phê rang': [0.8, 0.88] },
+  'Mủ cao su nước': { 'Cao su khối': [0.28, 0.4] },
+}
+
+/** kg for weight units, null for count units (bao, thùng) — SPEC §5. */
+export function toKg(quantity: number, unit: string): number | null {
+  const u = unit.trim().toLowerCase()
+  if (u === 'kg') return quantity
+  if (u === 'tấn') return quantity * 1000
+  return null
+}
 
 export const UNITS: StageFieldOption[] = [
   { value: 'kg', label: 'kg' },

@@ -132,7 +132,7 @@ export default function RecordEvent() {
     return (
       <div className="page-shell">
         {header}
-        <main className="max-w-lg mx-auto p-4">
+        <main className="page-container">
           <div className={cardClass({ className: 'text-center' })}>
             <p className="text-sm text-rose-600 dark:text-rose-400">{loadError}</p>
             <Link to="/tasks" className={buttonClass('secondary', 'sm', 'mt-4')}>
@@ -148,7 +148,7 @@ export default function RecordEvent() {
     return (
       <div className="page-shell">
         {header}
-        <main className="max-w-lg mx-auto p-4 space-y-3">
+        <main className="page-container space-y-3">
           <Skeleton className="h-24 w-full" />
           <Skeleton className="h-72 w-full" />
         </main>
@@ -163,9 +163,9 @@ export default function RecordEvent() {
   return (
     <div className="page-shell">
       {header}
-      <main className="max-w-lg mx-auto p-4 space-y-4">
+      <main className="page-container grid grid-cols-1 lg:grid-cols-3 gap-4 items-start">
         {/* What am I working on */}
-        <Link to={`/batch/${batch.id}`} className={cardClass({ hover: true, padding: 'md' })}>
+        <Link to={`/batch/${batch.id}`} className={cardClass({ hover: true, padding: 'md', className: 'lg:sticky lg:top-20' })}>
           <p className="font-semibold text-slate-900 dark:text-slate-50">{batch.productName}</p>
           <p className="text-sm text-slate-500 dark:text-slate-400 mt-0.5">
             {batch.productType} · {batch.origin} · {batch.quantity} {batch.unit}
@@ -182,7 +182,7 @@ export default function RecordEvent() {
         </Link>
 
         {blocked ? (
-          <div className={cardClass({ className: 'flex gap-3' })}>
+          <div className={cardClass({ className: 'flex gap-3 lg:col-span-2' })}>
             <TriangleAlert className="w-5 h-5 text-amber-500 flex-shrink-0" />
             <div className="text-sm text-slate-600 dark:text-slate-300">
               {batch.isRecalled ? (
@@ -204,7 +204,7 @@ export default function RecordEvent() {
           </div>
         ) : (
           stage && (
-            <form onSubmit={handleSubmit} className={cardClass({ padding: 'lg', className: 'space-y-5' })}>
+            <form onSubmit={handleSubmit} className={cardClass({ padding: 'lg', className: 'space-y-5 lg:col-span-2' })}>
               <div className="flex items-center gap-3">
                 {StageIcon && (
                   <span className="w-10 h-10 rounded-xl bg-brand-50 text-brand-600 dark:bg-brand-500/10 dark:text-brand-400 flex items-center justify-center">

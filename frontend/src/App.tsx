@@ -11,6 +11,8 @@ const Register = lazy(() => import('./pages/Register'))
 const Dashboard = lazy(() => import('./pages/Dashboard'))
 const RecordEvent = lazy(() => import('./pages/RecordEvent'))
 const NewBatch = lazy(() => import('./pages/NewBatch'))
+const TransformLots = lazy(() => import('./pages/TransformLots'))
+const Plots = lazy(() => import('./pages/Plots'))
 const BatchDetail = lazy(() => import('./pages/BatchDetail'))
 const Provenance = lazy(() => import('./pages/Provenance'))
 const Profile = lazy(() => import('./pages/Profile'))
@@ -75,6 +77,8 @@ function AppRoutes() {
         <Route path="/dashboard" element={<PrivateRoute><Dashboard /></PrivateRoute>} />
         <Route path="/record" element={<PrivateRoute><RecordEvent /></PrivateRoute>} />
         <Route path="/batches/new" element={<PrivateRoute><NewBatch /></PrivateRoute>} />
+        <Route path="/lots/transform" element={<PrivateRoute><TransformLots /></PrivateRoute>} />
+        <Route path="/plots" element={<PrivateRoute><Plots /></PrivateRoute>} />
         <Route path="/batch/:id" element={<PrivateRoute><BatchDetail /></PrivateRoute>} />
         <Route path="/profile" element={<PrivateRoute><Profile /></PrivateRoute>} />
         <Route path="/actors" element={<PrivateRoute><Actors /></PrivateRoute>} />

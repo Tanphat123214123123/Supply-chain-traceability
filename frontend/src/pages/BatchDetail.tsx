@@ -20,6 +20,9 @@ import { downloadBlob, MIME } from '../lib/reports/download'
 import Timeline from '../components/Timeline'
 import VerifyBadge from '../components/VerifyBadge'
 import RecallDialog from '../components/RecallDialog'
+import VerifyPanel from '../components/VerifyPanel'
+import LineagePanel from '../components/LineagePanel'
+import HandOffPanel from '../components/HandOffPanel'
 import Badge from '../components/ui/Badge'
 import { buttonClass } from '../components/ui/Button'
 import { cardClass } from '../components/ui/Card'
@@ -130,7 +133,7 @@ function ExportMenu({ result, actorsById, publicUrl }: { result: TraceResult; ac
         <Download className="w-4 h-4" /> {busy ? `Đang tạo ${FORMAT_NAMES[busy]}...` : 'Xuất báo cáo'} <ChevronDown className="w-3.5 h-3.5" />
       </button>
       {open && (
-        <div role="menu" className="absolute right-0 mt-1 w-64 z-20 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl shadow-card-hover p-1">
+        <div role="menu" className="absolute left-0 mt-1 w-64 z-20 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl shadow-card-hover p-1">
           {EXPORT_OPTIONS.map((o) => (
             <button
               key={o.format}
@@ -146,7 +149,7 @@ function ExportMenu({ result, actorsById, publicUrl }: { result: TraceResult; ac
         </div>
       )}
       {error && (
-        <p role="alert" className="absolute right-0 mt-1 text-xs text-rose-600 dark:text-rose-400 whitespace-nowrap">
+        <p role="alert" className="absolute left-0 mt-1 text-xs text-rose-600 dark:text-rose-400 whitespace-nowrap">
           {error}
         </p>
       )}
@@ -269,7 +272,7 @@ export default function BatchDetail() {
   if (loading && !result) {
     return (
       <div className="page-shell">
-        <main className="max-w-2xl mx-auto p-4 sm:p-6 space-y-4">
+        <main className="page-container space-y-4">
           <Skeleton className="h-8 w-1/3" />
           <Skeleton className="h-32 w-full" />
           <SkeletonCardList rows={4} />
@@ -282,7 +285,7 @@ export default function BatchDetail() {
     return (
       <div className="page-shell">
         {header('Lô hàng')}
-        <main className="max-w-2xl mx-auto p-4">
+        <main className="page-container">
           <div className={cardClass({ className: 'text-center py-10' })}>
             <p className="text-rose-500 dark:text-rose-400 text-sm mb-4">{error || 'Không tìm thấy lô hàng.'}</p>
             <Link to="/dashboard" className={buttonClass('secondary', 'sm')}>
@@ -306,7 +309,7 @@ export default function BatchDetail() {
     <div className="page-shell">
       {header(batch.productName, <VerifyBadge isValid={isValid} hasAnomalies={openAnomalies.length > 0} />)}
 
-      <main className="max-w-2xl mx-auto p-4 space-y-4">
+      <main className="page-container space-y-4">
         {flash && (
           <div role="status" className="bg-emerald-50 dark:bg-emerald-500/10 border border-emerald-200 dark:border-emerald-500/20 text-emerald-800 dark:text-emerald-300 text-sm rounded-xl px-3.5 py-2.5 flex items-center gap-2 animate-scale-in">
             <CheckCircle2 className="w-4 h-4 flex-shrink-0" /> {flash}
@@ -323,6 +326,8 @@ export default function BatchDetail() {
           </div>
         )}
 
+        <div className="grid grid-cols-1 xl:grid-cols-3 gap-4 items-start">
+        <div className="xl:col-span-2 space-y-4 min-w-0">
         {/* Status: what is it, where is it, who has it, what's next */}
         <section className={cardClass({ className: 'space-y-4' })}>
           <div className="flex items-start justify-between gap-3 flex-wrap">
@@ -381,13 +386,31 @@ export default function BatchDetail() {
           </section>
         )}
 
-        <div className="flex gap-2 flex-wrap items-center justify-end">
+        <Timeline events={events} actorsById={actorsById} />
+        </div>
+
+        {/* Side column: what you can do with this lot. */}
+        <aside className="space-y-4 min-w-0">
+        <div className="flex gap-2 flex-wrap items-center">
           <ExportMenu result={result} actorsById={actorsById} publicUrl={publicUrl} />
         </div>
 
-        <Timeline events={events} actorsById={actorsById} />
+        {actor && !batch.isRecalled && next && !mine && batch.assignedToActorId === actor.id && batch.consumedQuantity < batch.quantity && (
+          <HandOffPanel
+            batch={batch}
+            actors={actors}
+            onDone={() => {
+              setFlash('Đã bàn giao lô hàng.')
+              load()
+            }}
+          />
+        )}
+
+        <LineagePanel batch={batch} />
 
         <QrPanel batchId={batch.id} publicUrl={publicUrl} />
+
+        <VerifyPanel batchId={batch.id} />
 
         {canRecall && !batch.isRecalled && (
           <section className={cardClass({ className: 'border-rose-200/80 dark:border-rose-500/20' })}>
@@ -401,7 +424,9 @@ export default function BatchDetail() {
           </section>
         )}
 
-        <p className="text-center text-[11px] text-slate-300 dark:text-slate-600 font-mono break-all">Mã lô: {batch.id}</p>
+        <p className="text-[11px] text-slate-300 dark:text-slate-600 font-mono break-all">Mã lô: {batch.id}</p>
+        </aside>
+        </div>
       </main>
 
       <RecallDialog

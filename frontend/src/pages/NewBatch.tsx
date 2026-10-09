@@ -1,8 +1,8 @@
 import { FormEvent, useCallback, useEffect, useState } from 'react'
-import { Navigate, useNavigate } from 'react-router-dom'
+import { Link, Navigate, useNavigate } from 'react-router-dom'
 import { ArrowLeft, Sprout } from 'lucide-react'
 import { useAuth } from '../context/AuthContext'
-import { actorsApi, Actor, batchApi, Batch, eventApi } from '../api/client'
+import { actorsApi, Actor, batchApi, Batch, eventApi, Plot, plotsApi } from '../api/client'
 import { PRODUCT_TYPES, UNITS } from '../domain/stageFields'
 import { apiErrorMessage } from '../lib/apiError'
 import StageFieldsInput, { StageValues, toEventData } from '../components/StageFieldsInput'
@@ -24,6 +24,8 @@ export default function NewBatch() {
   const [productName, setProductName] = useState('')
   const [productType, setProductType] = useState('')
   const [origin, setOrigin] = useState('')
+  const [plots, setPlots] = useState<Plot[]>([])
+  const [plotId, setPlotId] = useState('')
   const [quantity, setQuantity] = useState('')
   const [unit, setUnit] = useState('kg')
   const [harvest, setHarvest] = useState<StageValues>({ harvestDate: new Date().toISOString().slice(0, 10) })
@@ -39,6 +41,7 @@ export default function NewBatch() {
 
   useEffect(() => {
     actorsApi.list().then(setActors).catch(() => {})
+    plotsApi.list().then(setPlots).catch(() => {})
   }, [])
 
   if (actor && actor.role !== 'FARMER' && !isAdmin) return <Navigate to="/tasks" replace />
@@ -54,6 +57,7 @@ export default function NewBatch() {
           productName: productName.trim(),
           productType,
           origin: origin.trim(),
+          plotId: plotId || undefined,
           quantity: Number(quantity),
           unit,
         }))
@@ -92,8 +96,8 @@ export default function NewBatch() {
         <h1 className="font-semibold text-slate-900 dark:text-slate-50">Lô hàng mới</h1>
       </header>
 
-      <main className="max-w-lg mx-auto p-4">
-        <form onSubmit={handleSubmit} className="space-y-4">
+      <main className="page-container">
+        <form onSubmit={handleSubmit} className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-start">
           <fieldset disabled={!!created} className={cardClass({ padding: 'lg', className: 'space-y-4 disabled:opacity-70' })}>
             <legend className="sr-only">Thông tin sản phẩm</legend>
             <h2 className="text-sm font-semibold text-slate-700 dark:text-slate-300">Sản phẩm</h2>
@@ -152,6 +156,36 @@ export default function NewBatch() {
               </div>
             </div>
             <div>
+              <label htmlFor="plot" className={labelClass}>
+                Lô đất
+              </label>
+              <select
+                id="plot"
+                value={plotId}
+                onChange={(e) => {
+                  setPlotId(e.target.value)
+                  const p = plots.find((x) => x.id === e.target.value)
+                  if (p && !origin) setOrigin(p.name)
+                }}
+                className={inputClass}
+              >
+                <option value="">— Không gắn lô đất —</option>
+                {plots.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.code} · {p.name} ({p.areaHa.toLocaleString('vi-VN')} ha)
+                  </option>
+                ))}
+              </select>
+              <p className="text-xs text-slate-400 dark:text-slate-500 mt-1">
+                Gắn lô đất để truy ngược được toạ độ nơi trồng và kiểm sản lượng theo diện tích.{' '}
+                {plots.length === 0 && (
+                  <Link to="/plots" className="text-brand-600 dark:text-brand-400 underline">
+                    Thêm lô đất
+                  </Link>
+                )}
+              </p>
+            </div>
+            <div>
               <label htmlFor="origin" className={labelClass}>
                 Vùng trồng / nông trại <span className="text-rose-500">*</span>
               </label>
@@ -191,14 +225,16 @@ export default function NewBatch() {
           </div>
 
           {error && (
-            <div role="alert" className="bg-rose-50 dark:bg-rose-500/10 border border-rose-200 dark:border-rose-500/20 text-rose-700 dark:text-rose-400 text-sm rounded-xl px-3.5 py-2.5">
+            <div role="alert" className="lg:col-span-2 bg-rose-50 dark:bg-rose-500/10 border border-rose-200 dark:border-rose-500/20 text-rose-700 dark:text-rose-400 text-sm rounded-xl px-3.5 py-2.5">
               {error}
             </div>
           )}
 
-          <Button type="submit" disabled={submitting} className="w-full">
-            {submitting ? 'Đang lưu...' : created ? 'Lưu lại thu hoạch' : 'Tạo lô & bàn giao'}
-          </Button>
+          <div className="lg:col-span-2 flex justify-end">
+            <Button type="submit" disabled={submitting} className="w-full lg:w-auto lg:min-w-64">
+              {submitting ? 'Đang lưu...' : created ? 'Lưu lại thu hoạch' : 'Tạo lô & bàn giao'}
+            </Button>
+          </div>
         </form>
       </main>
     </div>

@@ -1,5 +1,6 @@
 import axios from 'axios'
 import { io, Socket } from 'socket.io-client'
+import type { VerificationPayload } from '../lib/verify/verifyBatch'
 import { Sprout, Factory, Microscope, Package, Truck, Store, type LucideIcon } from 'lucide-react'
 
 const BASE_URL = import.meta.env.VITE_API_URL ?? '/api'
@@ -204,6 +205,69 @@ export interface Batch {
   eventCount: number
   /** Timestamp of the most recent event — absent while nothing has been recorded. */
   lastEventAt?: string
+  /** How much of `quantity` merges/splits/transformations have already taken. */
+  consumedQuantity: number
+  /** The plot a harvest lot was picked from. */
+  plotId?: string
+}
+
+export type EventKind = 'OBSERVE' | 'MERGE' | 'SPLIT' | 'TRANSFORM'
+export type TransformationKind = Exclude<EventKind, 'OBSERVE'>
+
+export const TRANSFORMATION_LABELS: Record<TransformationKind, string> = {
+  MERGE: 'Gộp lô',
+  SPLIT: 'Tách lô',
+  TRANSFORM: 'Chế biến (đổi loại hàng)',
+}
+
+export interface EventLink {
+  lotId: string
+  quantity: number
+  unit: string
+  headHash: string
+  eventCount: number
+}
+
+type LineageLot = Pick<Batch, 'id' | 'productName' | 'productType' | 'origin' | 'quantity' | 'unit' | 'currentStage' | 'isRecalled' | 'plotId' | 'consumedQuantity'>
+
+export interface LineageEdge {
+  transformationId: string
+  kind: TransformationKind
+  fromLotId: string
+  toLotId: string
+  quantity: number
+  unit: string
+  createdAt: string
+}
+
+export interface LineageGraph {
+  lotId: string
+  lots: Record<string, LineageLot>
+  upstream: LineageEdge[]
+  downstream: LineageEdge[]
+  rootLotIds: string[]
+}
+
+export interface Plot {
+  id: string
+  code: string
+  name: string
+  ownerActorId: string
+  shape: 'polygon' | 'point'
+  areaHa: number
+  geometry: { type: 'Point' | 'Polygon' | 'MultiPolygon'; coordinates: unknown }
+  createdAt: string
+}
+
+export interface CreateTransformationBody {
+  kind: TransformationKind
+  stage: SupplyChainStage
+  location: string
+  notes?: string
+  data?: Record<string, string | number | boolean>
+  inputs: Array<{ lotId: string; quantity: number }>
+  outputs: Array<{ productName: string; productType: string; quantity: number; unit: string }>
+  assignNextTo?: string
 }
 
 export interface TraceEvent {
@@ -218,13 +282,16 @@ export interface TraceEvent {
   hash: string
   prevHash: string
   sequenceNumber: number
-  /** 1 = legacy HMAC (server-verifiable only), 2 = public salted SHA-256 over RFC 8785 JSON. */
-  hashVersion: 1 | 2
-  /** Per-event random salt — part of the v2 hash preimage, absent on v1 events. */
+  /** 1 = legacy HMAC, 2 = salted SHA-256 over the whole event, 3 = per-field commitments (docs/SPEC_PHASE1.md). */
+  hashVersion: 1 | 2 | 3
+  /** v2 only. */
   salt?: string
+  kind: EventKind
+  /** Input lots — only on the first event of a merged/split/transformed lot. */
+  links: EventLink[]
 }
 
-export type AnomalyType = 'STAGE_SKIPPED' | 'DUPLICATE_STAGE' | 'OUT_OF_ORDER' | 'CHAIN_TAMPERED'
+export type AnomalyType = 'STAGE_SKIPPED' | 'DUPLICATE_STAGE' | 'OUT_OF_ORDER' | 'CHAIN_TAMPERED' | 'MASS_BALANCE_VIOLATION'
 
 export type AnomalySeverity = 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL'
 
@@ -233,6 +300,7 @@ export const ANOMALY_TYPE_LABELS: Record<AnomalyType, string> = {
   DUPLICATE_STAGE: 'Ghi trùng khâu',
   OUT_OF_ORDER: 'Sai thứ tự',
   CHAIN_TAMPERED: 'Dữ liệu bị can thiệp',
+  MASS_BALANCE_VIOLATION: 'Sai lệch khối lượng',
 }
 
 export const SEVERITY_LABELS: Record<AnomalySeverity, string> = {
@@ -279,6 +347,14 @@ export interface PublicTrace {
   /** Unresolved anomalies only. */
   hasAnomalies: boolean
   journey: PublicJourneyStep[]
+  /** Present when the lot was assembled from other lots. */
+  origins?: {
+    harvestLotCount: number
+    regions: string[]
+    producers: string[]
+    plotCount: number
+    steps: Array<{ kind: TransformationKind; at: string; inputCount: number }>
+  }
 }
 
 export interface AttentionSummary {
@@ -362,31 +438,6 @@ export interface NotificationItem {
   createdAt: string
 }
 
-export type ChainProblem = 'TAMPERED_EVENT' | 'BROKEN_LINK' | 'HEAD_MISMATCH' | 'UNVERIFIABLE_LEGACY'
-
-export interface ChainVerification {
-  valid: boolean
-  brokenAtIndex?: number
-  problem?: ChainProblem
-  /** Whether the chain ends exactly at the head the database recorded (catches a deleted tail). */
-  headMatches: boolean | null
-  legacyEventCount: number
-  perEvent: Array<{
-    eventId: string
-    sequenceNumber: number
-    hashVersion: 1 | 2
-    /** null when the server can't recompute it (legacy v1 event without its key). */
-    recomputedHash: string | null
-    matchesStoredHash: boolean
-    linksToPrevious: boolean
-    publiclyVerifiable: boolean
-  }>
-}
-
-export interface FullVerifyResult extends ChainVerification {
-  batch: Pick<Batch, 'id' | 'productName'>
-  events: TraceEvent[]
-}
 
 export interface PaginatedResult<T> {
   items: T[]
@@ -448,12 +499,16 @@ export const batchApi = {
     quantity: number
     unit: string
     metadata?: Record<string, unknown>
+    plotId?: string
   }) => client.post<Batch>('/batches', body).then((r) => r.data),
+  handOff: (id: string, assignNextTo: string) => client.post<Batch>(`/batches/${id}/handoff`, { assignNextTo }).then((r) => r.data),
   recall: (id: string, reason: string) =>
     client.post<Batch>(`/batches/${id}/recall`, { reason }).then((r) => r.data),
   qrSvg: (id: string) =>
     client.get<string>(`/batches/${id}/qr`, { responseType: 'text' as const }).then((r) => r.data),
   pending: () => client.get<Batch[]>('/batches/pending').then((r) => r.data),
+  /** Open lots I hold — candidates for merge / split / transform. */
+  custody: () => client.get<Batch[]>('/batches/custody').then((r) => r.data),
   /** Batches for a report; `from`/`to` are ISO instants (the caller decides what "a day" means). */
   exportJson: (params: { from?: string; to?: string; origin?: string }) =>
     client.get<Batch[]>('/batches/export', { params: { ...params, format: 'json' } }).then((r) => r.data),
@@ -476,8 +531,13 @@ export const traceApi = {
     client.get<TraceResult>(`/trace/${batchId}`).then((r) => r.data),
   public: (batchId: string) =>
     client.get<PublicTrace>(`/trace/public/${batchId}`).then((r) => r.data),
-  verifyFull: (batchId: string) =>
-    client.get<FullVerifyResult>(`/trace/public/${batchId}/full`).then((r) => r.data),
+  /** Material for the in-browser verifier; `token` (a verification link) opens every field. */
+  verifyFull: (batchId: string, token?: string) =>
+    client
+      .get<VerificationPayload>(`/trace/public/${batchId}/full`, { params: token ? { token } : undefined })
+      .then((r) => r.data),
+  createVerificationLink: (batchId: string, days: number) =>
+    client.post<{ token: string; expiresAt: string }>(`/trace/${batchId}/verification-links`, { days }).then((r) => r.data),
 }
 
 export const statsApi = {
@@ -486,6 +546,39 @@ export const statsApi = {
   byDay: () => client.get<StatsByDay[]>('/stats/by-day').then((r) => r.data),
   byOrigin: () => client.get<StatsByOrigin[]>('/stats/by-origin').then((r) => r.data),
   attention: () => client.get<AttentionSummary>('/stats/attention').then((r) => r.data),
+  /** Reports dashboard — one filtered window; `from`/`to` are ISO instants. */
+  report: (params: { from?: string; to?: string; productType?: string; origin?: string }) =>
+    client.get<ReportData>('/stats/report', { params }).then((r) => r.data),
+}
+
+export interface KpiValue {
+  value: number
+  /** Same measure over the equally long window just before — null when not computable. */
+  previous: number | null
+  /** 12 equal buckets across the window, oldest first. */
+  trend: number[]
+}
+
+export interface ReportData {
+  window: { from: string; to: string; previousFrom: string }
+  kpis: {
+    batches: KpiValue
+    volumeKg: KpiValue
+    events: KpiValue
+    completionRate: KpiValue
+    recallRate: KpiValue
+    openAnomalies: KpiValue
+    avgLeadTimeDays: KpiValue
+    anchoredRate: KpiValue
+  }
+  monthly: Array<{ month: string; batches: number; events: number; volumeKg: number; recalls: number; anomalies: number }>
+  funnel: Array<{ stage: SupplyChainStage; batches: number }>
+  stageDurations: Array<{ from: SupplyChainStage; to: SupplyChainStage; avgHours: number; samples: number }>
+  byProductType: Array<{ productType: string; batches: number; volumeKg: number }>
+  byOrigin: Array<{ origin: string; batches: number; anomalies: number; recalls: number }>
+  anomaliesByType: Array<{ type: AnomalyType; open: number; resolved: number }>
+  organizations: Array<{ organization: string; events: number; batches: number; anomalies: number; avgWaitHours: number | null }>
+  options: { productTypes: string[]; origins: string[] }
 }
 
 export const adminApi = {
@@ -513,4 +606,26 @@ export const actorsApi = {
 
 export const notificationsApi = {
   list: (limit = 20) => client.get<NotificationItem[]>('/notifications', { params: { limit } }).then((r) => r.data),
+}
+
+export const lineageApi = {
+  transform: (body: CreateTransformationBody) =>
+    client.post<{ transformationId: string; outputs: Batch[]; anomalies: Anomaly[] }>('/transformations', body).then((r) => r.data),
+  graph: (lotId: string) => client.get<LineageGraph>(`/transformations/lineage/${lotId}`).then((r) => r.data),
+  /** GeoJSON FeatureCollection of every plot behind a lot (EUDR geolocation). */
+  plotsGeoJson: (lotId: string) =>
+    client.get<string>(`/transformations/lineage/${lotId}/plots.geojson`, { responseType: 'text' as const }).then((r) => r.data),
+}
+
+export const plotsApi = {
+  list: () => client.get<Plot[]>('/plots').then((r) => r.data),
+  create: (body: { code: string; name: string; geometry: Plot['geometry']; declaredAreaHa?: number; ownerActorId?: string }) =>
+    client.post<Plot>('/plots', body).then((r) => r.data),
+  import: (featureCollection: unknown) =>
+    client
+      .post<{ results: Array<{ index: number; plot?: Plot; error?: string }> }>('/plots/import', featureCollection, {
+        // Partial success comes back as 422 — still a result list, not an exception.
+        validateStatus: (s) => s === 201 || s === 422,
+      })
+      .then((r) => r.data),
 }

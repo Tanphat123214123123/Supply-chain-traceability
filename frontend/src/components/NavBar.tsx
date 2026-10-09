@@ -15,6 +15,7 @@ import {
   Sun,
   Moon,
   type LucideIcon,
+  MapPinned,
 } from 'lucide-react'
 import { useAuth } from '../context/AuthContext'
 import { useTheme } from '../context/ThemeContext'
@@ -36,6 +37,7 @@ const linkClass = ({ isActive }: { isActive: boolean }) =>
 const NAV_ITEMS: Array<{ to: string; label: string; icon: LucideIcon; end?: boolean; adminOnly?: boolean; badge?: boolean }> = [
   { to: '/dashboard', label: 'Tổng quan', icon: LayoutDashboard, end: true },
   { to: '/tasks', label: 'Việc cần làm', icon: ListChecks, badge: true },
+  { to: '/plots', label: 'Vùng trồng', icon: MapPinned },
   { to: '/actors', label: 'Đối tác', icon: Users },
   { to: '/reports', label: 'Báo cáo', icon: BarChart3 },
   { to: '/notifications', label: 'Thông báo', icon: Bell },
@@ -71,7 +73,7 @@ export default function NavBar() {
 
   return (
     <header className="bg-white/80 dark:bg-slate-900/80 backdrop-blur-md border-b border-slate-200 dark:border-slate-800 sticky top-0 z-20">
-      <div className="max-w-7xl mx-auto px-3 sm:px-4 h-14 flex items-center gap-1">
+      <div className="w-full px-4 sm:px-6 lg:px-8 2xl:px-12 h-14 flex items-center gap-1">
         <NavLink to="/dashboard" className="flex items-center gap-1.5 text-base font-bold text-slate-900 dark:text-slate-50 mr-0.5 flex-shrink-0">
           <Link2 className="w-5 h-5 text-brand-600 dark:text-brand-400" />
           <span className="hidden sm:inline">TraceChain</span>

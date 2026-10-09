@@ -16,6 +16,8 @@ function makeEvent(overrides: Partial<TraceEvent> = {}): TraceEvent {
     prevHash: '0'.repeat(64),
     sequenceNumber: 0,
     hashVersion: 2,
+    kind: 'OBSERVE',
+    links: [],
     salt: 'b'.repeat(64),
     ...overrides,
   }
